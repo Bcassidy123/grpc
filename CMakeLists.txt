@@ -7,6 +7,7 @@ project(GRPCTest
 		0.1.0
 )
 
+# hard time compiling without this thing
 add_definitions(-D_WIN32_WINNT=0x600)
 
 find_package(gRPC CONFIG REQUIRED)
