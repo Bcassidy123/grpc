@@ -101,6 +101,18 @@ target_link_libraries(server_stream
 		helloworld_LIB
 )
 
+# Server stream client
+add_executable(server_stream_client
+	src/server_stream_client.cpp
+)
+target_compile_features(server_stream_client
+	PRIVATE
+		cxx_std_17
+)
+target_link_libraries(server_stream_client
+	PRIVATE
+		helloworld_LIB
+)
 # Async Client
 add_executable(client
 	src/client.cpp
@@ -136,6 +148,19 @@ target_compile_features(client_stream
 		cxx_std_17
 )
 target_link_libraries(client_stream
+	PRIVATE
+		helloworld_LIB
+)
+
+# Client Stream Client
+add_executable(client_stream_client
+	src/client_stream_client.cpp
+)
+target_compile_features(client_stream_client
+	PRIVATE
+		cxx_std_17
+)
+target_link_libraries(client_stream_client
 	PRIVATE
 		helloworld_LIB
 )
