@@ -16,15 +16,36 @@ using helloworld::Greeter;
 using helloworld::HelloReply;
 using helloworld::HelloRequest;
 
-class CallData {
-	helloworld::Greeter::AsyncService *service;
-	grpc::ServerCompletionQueue *cq;
-	grpc::ServerAsyncResponseWriter<HelloReply> responder;
-	ServerContext context;
-	HelloRequest request;
-	HelloReply reply;
+class CallBase {
 	enum CallStatus { CREATE, PROCESS, FINISH };
 	CallStatus status = CREATE;
+
+public:
+	virtual ~CallBase() {}
+	void Proceed() {
+		if (status == CREATE) {
+			status = PROCESS;
+			Create();
+		} else if (status == PROCESS) {
+			status = FINISH;
+			Process();
+		} else {
+			delete this;
+		}
+	}
+
+private:
+	virtual void Create() = 0;
+	virtual void Process() = 0;
+};
+
+class CallData : public CallBase {
+	helloworld::Greeter::AsyncService *service;
+	grpc::ServerCompletionQueue *cq;
+	ServerContext context;
+	HelloRequest request;
+	grpc::ServerAsyncResponseWriter<HelloReply> responder;
+	HelloReply reply;
 
 public:
 	CallData(helloworld::Greeter::AsyncService *service,
@@ -33,25 +54,18 @@ public:
 		Proceed();
 	}
 
-	void Proceed() {
-		if (status == CREATE) {
-
-			status = PROCESS;
-
-			service->RequestSayHello(&context, &request, &responder, cq, cq, this);
-		} else if (status == PROCESS) {
-			status = FINISH;
-
-			new CallData(service, cq);
-			std::string prefix("hello ");
-			reply.set_message(prefix + request.name());
-			responder.Finish(reply, Status::OK, this);
-
-		} else {
-			delete this;
-		}
+private:
+	void Create() override {
+		service->RequestSayHello(&context, &request, &responder, cq, cq, this);
+	}
+	void Process() override {
+		new CallData(service, cq);
+		std::string prefix("hello ");
+		reply.set_message(prefix + request.name());
+		responder.Finish(reply, Status::OK, this);
 	}
 };
+
 class ServerImpl {
 	std::string server_address;
 	helloworld::Greeter::AsyncService service;
@@ -83,6 +97,7 @@ private:
 		}
 	}
 };
+
 int main() {
 	std::string server_address("0.0.0.0:50051");
 	ServerImpl server(server_address);
