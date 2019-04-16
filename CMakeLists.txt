@@ -113,6 +113,19 @@ target_link_libraries(server_stream_client
 	PRIVATE
 		helloworld_LIB
 )
+
+# Server stream bidir
+add_executable(server_stream_bidir
+	src/server_stream_bidir.cpp
+)
+target_compile_features(server_stream_bidir
+	PRIVATE
+		cxx_std_17
+)
+target_link_libraries(server_stream_bidir
+	PRIVATE
+		helloworld_LIB
+)
 # Async Client
 add_executable(client
 	src/client.cpp
@@ -161,6 +174,19 @@ target_compile_features(client_stream_client
 		cxx_std_17
 )
 target_link_libraries(client_stream_client
+	PRIVATE
+		helloworld_LIB
+)
+
+# Client Stream Bidir
+add_executable(client_stream_bidir
+	src/client_stream_bidir.cpp
+)
+target_compile_features(client_stream_bidir
+	PRIVATE
+		cxx_std_17
+)
+target_link_libraries(client_stream_bidir
 	PRIVATE
 		helloworld_LIB
 )
