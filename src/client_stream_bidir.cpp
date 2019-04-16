@@ -76,7 +76,7 @@ private:
 
 	public:
 		Writer(ClientData &parent) : parent(parent) {}
-		void Write(HelloRequest request) {
+		void Write(HelloRequest request) override {
 			queue.emplace_back(std::move(request));
 			if (!write_in_progress) {
 				parent.stream->Write(queue.front(), this);
