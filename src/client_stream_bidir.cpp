@@ -1,7 +1,10 @@
+#include <atomic>
 #include <chrono>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 
 #include <grpcpp/grpcpp.h>
 
@@ -15,119 +18,161 @@ using helloworld::Greeter;
 using helloworld::HelloReply;
 using helloworld::HelloRequest;
 
-class ClientBase {
+class CallBase {
 public:
-	virtual ~ClientBase() {}
+	virtual ~CallBase() {}
 	virtual void Proceed(bool ok) = 0;
-	virtual void Write(HelloRequest) {}
-	virtual void Finish() {}
 };
 
-class ClientData : public ClientBase {
+template <typename W, typename R>
+class ClientAsyncReaderWriter : public CallBase {
+	using Parent = ClientAsyncReaderWriter;
 	enum State { CREATE, PROCESS, FINISH };
 
-public:
-	ClientData(std::shared_ptr<Channel> channel, grpc::CompletionQueue *cq)
-			: reader(*this), writer(*this) {
-		stub_ = Greeter::NewStub(channel);
-		stream = stub_->PrepareAsyncSayHelloBidir(&context, cq);
-		stream->StartCall(this);
-		stream->ReadInitialMetadata(this);
-	}
-
-	void Proceed(bool ok) override {
+protected:
+	ClientAsyncReaderWriter(
+			grpc::ClientAsyncReaderWriter<W, R> *stream = nullptr) noexcept
+			: stream(stream) {}
+	void Proceed(bool ok) noexcept override {
 		if (state == CREATE) {
-			reader.Read();
-			state = PROCESS;
+			if (ok) {
+				reader = std::make_unique<Reader>(*this);
+				writer = std::make_unique<Writer>(*this);
+				OnCreate();
+				state = PROCESS;
+			} else {
+				Finish();
+			}
 		} else if (state == PROCESS) {
+			if (ok) {
+				OnReadInitialMetadata();
+			} else {
+				Finish();
+			}
 		} else {
-			std::cout << status.error_code() << std::endl;
+			OnFinish();
 		}
 	}
-	void Write(HelloRequest req) override { writer.Write(req); }
 
-	void Finish() override {
-		context.TryCancel();
-		stream->Finish(&status, this);
+	void ReadInitialMetadata() noexcept { stream->ReadInitialMetadata(this); }
+	void Read() noexcept { reader->Read(); }
+	void Write(W w) noexcept { writer->Write(std::move(w)); }
+	void Write(W w, grpc::WriteOptions const &opt) noexcept {
+		writer->Write(std::move(w), opt);
+	}
+	void WritesDone() noexcept { writer->WritesDone(); }
+	void Finish() noexcept {
 		state = FINISH;
+		stream->Finish(&status, this);
 	}
 
 private:
-	class Reader : public ClientBase {
-		ClientData &parent;
-		HelloReply reply;
+	virtual void OnCreate() noexcept {}
+	virtual void OnReadInitialMetadata() noexcept {}
+	virtual void OnRead(R const &) noexcept {}
+	virtual void OnReadDone() noexcept {}
+	virtual void OnWrite(W const &) noexcept {}
+	virtual void OnWriteDone() noexcept {}
+	virtual void OnFinish() noexcept {}
+
+private:
+	class Reader : public CallBase {
+		Parent &parent;
+		R read;
 
 	public:
-		Reader(ClientData &parent) : parent(parent) {}
-		void Read() { parent.stream->Read(&reply, this); }
+		Reader(Parent &parent) : parent(parent) {}
+		void Read() { parent.stream->Read(&read, this); }
 		void Proceed(bool ok) override {
 			if (ok) {
-				// do something with request here
-				std::cout << "read: " << reply.message() << std::endl;
-				// foo(reply)
-				parent.stream->Read(&reply, this);
+				parent.OnRead(read);
 			} else {
-				Finish();
-			}
-		}
-		void Finish() override {
-			parent.read_completed = true;
-			if (parent.write_completed) {
-				parent.Finish();
+				parent.OnReadDone();
+				parent.reader.reset();
 			}
 		}
 	};
-	class Writer : public ClientBase {
-		bool write_in_progress = false;
-		ClientData &parent;
-		std::list<HelloRequest> queue;
+	class Writer : public CallBase {
+		Parent &parent;
+		W write;
 
 	public:
-		Writer(ClientData &parent) : parent(parent) {}
-		void Write(HelloRequest request) override {
-			queue.emplace_back(std::move(request));
-			if (!write_in_progress) {
-				parent.stream->Write(queue.front(), this);
-				write_in_progress = true;
-			}
-		}
+		Writer(Parent &parent) : parent(parent) {}
 		void Proceed(bool ok) override {
 			if (ok) {
-				write_in_progress = false;
-				[[maybe_unused]] auto request = queue.front();
-				// do something with request here
-				std::cout << "write: " << request.name() << std::endl;
-				// foo(request)
-				queue.pop_front();
-				if (!queue.empty()) {
-					parent.stream->Write(queue.front(), this);
-					write_in_progress = true;
-				}
+				parent.OnWrite(write);
 			} else {
-				Finish();
+				WritesDone();
 			}
 		}
-		void Finish() override {
-			parent.write_completed = true;
-			parent.stream->WritesDone(this);
-			if (parent.read_completed) {
-				parent.Finish();
-			}
+		void Write(W w) {
+			write = std::move(w);
+			parent.stream->Write(write, this);
+		}
+		void Write(W w, grpc::WriteOptions opt) noexcept {
+			write = std::move(w);
+			parent.stream->Write(write, opt, this);
+		}
+		void WritesDone() noexcept {
+			parent.OnWriteDone();
+			parent.writer.reset();
 		}
 	};
+
+protected:
+	grpc::ClientAsyncReaderWriter<W, R> *stream;
+	grpc::Status status;
 
 private:
 	State state = CREATE;
-	ClientContext context;
-	std::unique_ptr<Greeter::Stub> stub_;
+	std::unique_ptr<Reader> reader;
+	std::unique_ptr<Writer> writer;
+};
+class CallData : public ClientAsyncReaderWriter<HelloRequest, HelloReply> {
+
+	using Base = ClientAsyncReaderWriter<HelloRequest, HelloReply>;
+
 	std::unique_ptr<grpc::ClientAsyncReaderWriter<HelloRequest, HelloReply>>
 			stream;
+	grpc::ClientContext context;
 
-	Reader reader;
-	Writer writer;
-	Status status;
-	bool read_completed = false;
-	bool write_completed = false;
+public:
+	CallData(std::shared_ptr<Channel> channel, grpc::CompletionQueue *cq)
+			: Base(nullptr) {
+		auto stub = Greeter::NewStub(channel);
+		stream = stub->PrepareAsyncSayHelloBidir(&context, cq);
+		Base::stream = stream.get();
+		stream->StartCall(this);
+	}
+	void OnCreate() noexcept override {
+		std::cout << std::this_thread::get_id() << " create" << std::endl;
+		ReadInitialMetadata();
+	}
+	void OnReadInitialMetadata() noexcept override {
+		std::cout << std::this_thread::get_id() << " read metadata" << std::endl;
+		Read();
+		HelloRequest req;
+		req.set_name("Bob Tabor");
+		Write(req);
+	}
+	void OnFinish() noexcept override {
+		std::cout << std::this_thread::get_id() << " finish" << std::endl;
+	}
+	void OnRead(const HelloReply &reply) noexcept override {
+		std::cout << std::this_thread::get_id() << " read: " << reply.message()
+							<< std::endl;
+	}
+	void OnReadDone() noexcept override {
+		std::cout << std::this_thread::get_id() << " read done " << std::endl;
+	}
+	void OnWrite(const HelloRequest &request) noexcept override {
+		std::cout << std::this_thread::get_id() << " write: " << request.name()
+							<< std::endl;
+		WritesDone();
+	}
+	void OnWriteDone() noexcept override {
+		std::cout << std::this_thread::get_id() << " write done " << std::endl;
+	}
 };
 
 int main() {
@@ -136,37 +181,33 @@ int main() {
 	auto channel =
 			grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
 	CompletionQueue cq;
-	void *tag;
-	bool ok = false;
-	bool once = false;
-	auto c = new ClientData(channel, &cq);
-
-	int i = 0;
-	bool finish_once = false;
-	while (true) {
-		auto nextStatus = cq.AsyncNext(
-				&tag, &ok, std::chrono::system_clock::now() + std::chrono::seconds(2));
-		if (nextStatus == grpc::CompletionQueue::NextStatus::GOT_EVENT) {
-			static_cast<ClientBase *>(tag)->Proceed(ok);
-			if (ok && !once) {
-				once = true;
-				HelloRequest req;
-				req.set_name("John doe");
-				static_cast<ClientBase *>(tag)->Write(req);
+	auto c = new CallData(channel, &cq);
+	std::atomic_bool shutdown = false;
+	auto f = [&]() {
+		void *tag;
+		bool ok = false;
+		while (cq.Next(&tag, &ok)) {
+			std::cout << "ok: " << ok << std::endl;
+			if (!shutdown) {
+				static_cast<CallBase *>(tag)->Proceed(ok);
 			}
-
-		} else if (nextStatus == grpc::CompletionQueue::NextStatus::TIMEOUT) {
-			++i;
-			if (!finish_once) {
-				finish_once = true;
-				c->Finish();
-			} else {
-				cq.Shutdown();
-			}
-		} else {
-			break;
 		}
-	}
+	};
+	std::thread t1(f);
+	std::thread t2(f);
+	std::thread t3(f);
+	std::thread t4(f);
+	std::string j;
+	std::cin >> j;
+	shutdown = true;
+	cq.Shutdown();
+	f();
+	t1.join();
+	t2.join();
+	t3.join();
+	t4.join();
+	std::cout << " Good" << std::endl;
+
 	delete c;
 	return 0;
 }
