@@ -31,103 +31,94 @@ class ClientAsyncReaderWriter : public CallBase {
 	enum State { CREATE, PROCESS, FINISH };
 
 protected:
-	ClientAsyncReaderWriter(
-			grpc::ClientAsyncReaderWriter<W, R> *stream = nullptr) noexcept
-			: stream(stream) {}
+	ClientAsyncReaderWriter(grpc::ClientAsyncReaderWriter<W, R> *stream = nullptr,
+													grpc::Status *status = nullptr) noexcept
+			: stream(stream), status(status) {}
+	void Init(grpc::ClientAsyncReaderWriter<W, R> *stream,
+						grpc::Status *status) noexcept {
+		this->stream = stream;
+		this->status = status;
+	}
 	void Proceed(bool ok) noexcept override {
 		if (state == CREATE) {
 			if (ok) {
-				reader = std::make_unique<Reader>(*this);
-				writer = std::make_unique<Writer>(*this);
 				OnCreate();
 				state = PROCESS;
 			} else {
 				Finish();
 			}
 		} else if (state == PROCESS) {
-			if (ok) {
-				OnReadInitialMetadata();
-			} else {
-				Finish();
-			}
+			// writes done
 		} else {
 			OnFinish();
 		}
 	}
 
-	void ReadInitialMetadata() noexcept { stream->ReadInitialMetadata(this); }
-	void Read() noexcept { reader->Read(); }
-	void Write(W w) noexcept { writer->Write(std::move(w)); }
-	void Write(W w, grpc::WriteOptions const &opt) noexcept {
-		writer->Write(std::move(w), opt);
+	void ReadInitialMetadata() noexcept {
+		stream->ReadInitialMetadata(&initial_metadata_reader);
 	}
-	void WritesDone() noexcept { writer->WritesDone(); }
+	void Read(R *r) noexcept { stream->Read(r, &reader); }
+	void Write(W const &w) noexcept { stream->Write(w, &writer); }
+	void Write(W const &w, grpc::WriteOptions const &opt) noexcept {
+		stream->Write(w, , opt, &writer);
+	}
+	void WritesDone() noexcept { stream->WritesDone(this); }
 	void Finish() noexcept {
 		state = FINISH;
-		stream->Finish(&status, this);
+		stream->Finish(status, this);
 	}
 
 private:
 	virtual void OnCreate() noexcept {}
 	virtual void OnReadInitialMetadata() noexcept {}
-	virtual void OnRead(R const &) noexcept {}
+	virtual void OnRead() noexcept {}
 	virtual void OnReadDone() noexcept {}
-	virtual void OnWrite(W const &) noexcept {}
+	virtual void OnWrite() noexcept {}
 	virtual void OnWriteDone() noexcept {}
 	virtual void OnFinish() noexcept {}
 
 private:
-	class Reader : public CallBase {
-		Parent &parent;
-		R read;
-
-	public:
-		Reader(Parent &parent) : parent(parent) {}
-		void Read() { parent.stream->Read(&read, this); }
+	struct InitialMetadataReader : public CallBase {
+		Parent *parent;
+		InitialMetadataReader(Parent *parent) : parent(parent) {}
 		void Proceed(bool ok) override {
 			if (ok) {
-				parent.OnRead(read);
+				parent->OnReadInitialMetadata();
 			} else {
-				parent.OnReadDone();
-				parent.reader.reset();
 			}
 		}
 	};
-	class Writer : public CallBase {
-		Parent &parent;
-		W write;
-
-	public:
-		Writer(Parent &parent) : parent(parent) {}
+	struct Reader : public CallBase {
+		Parent *parent;
+		Reader(Parent *parent) : parent(parent) {}
 		void Proceed(bool ok) override {
 			if (ok) {
-				parent.OnWrite(write);
+				parent->OnRead();
 			} else {
-				WritesDone();
+				parent->OnReadDone();
 			}
 		}
-		void Write(W w) {
-			write = std::move(w);
-			parent.stream->Write(write, this);
-		}
-		void Write(W w, grpc::WriteOptions opt) noexcept {
-			write = std::move(w);
-			parent.stream->Write(write, opt, this);
-		}
-		void WritesDone() noexcept {
-			parent.OnWriteDone();
-			parent.writer.reset();
+	};
+	struct Writer : public CallBase {
+		Parent *parent;
+		Writer(Parent *parent) : parent(parent) {}
+		void Proceed(bool ok) override {
+			if (ok) {
+				parent->OnWrite();
+			} else {
+				parent->OnWriteDone();
+			}
 		}
 	};
-
-protected:
-	grpc::ClientAsyncReaderWriter<W, R> *stream;
-	grpc::Status status;
 
 private:
+	grpc::ClientAsyncReaderWriter<W, R> *stream;
+	grpc::Status *status;
+
 	State state = CREATE;
-	std::unique_ptr<Reader> reader;
-	std::unique_ptr<Writer> writer;
+	InitialMetadataReader initial_metadata_reader = {this};
+	Reader reader = {this};
+	Writer writer = {this};
 };
 class CallData : public ClientAsyncReaderWriter<HelloRequest, HelloReply> {
 
@@ -136,6 +127,8 @@ class CallData : public ClientAsyncReaderWriter<HelloRequest, HelloReply> {
 	std::unique_ptr<grpc::ClientAsyncReaderWriter<HelloRequest, HelloReply>>
 			stream;
 	grpc::ClientContext context;
+	grpc::Status status;
+	HelloReply reply;
 	std::list<HelloRequest> pending_writes;
 	std::mutex write_mutex;
 
@@ -144,7 +137,7 @@ public:
 			: Base(nullptr) {
 		auto stub = Greeter::NewStub(channel);
 		stream = stub->PrepareAsyncSayHelloBidir(&context, cq);
-		Base::stream = stream.get();
+		Base::Init(stream.get(), &status);
 		stream->StartCall(this);
 	}
 	void OnCreate() noexcept override {
@@ -153,28 +146,33 @@ public:
 	}
 	void OnReadInitialMetadata() noexcept override {
 		std::cout << std::this_thread::get_id() << " read metadata" << std::endl;
-		Read();
-		Write("Bob Tabor");
+		Read(&reply);
 	}
 	void OnFinish() noexcept override {
 		std::cout << std::this_thread::get_id() << " finish" << std::endl;
+		std::cout << std::this_thread::get_id()
+							<< " status: " << status.error_code() << " "
+							<< status.error_details() << std::endl;
 	}
-	void OnRead(const HelloReply &reply) noexcept override {
+	void OnRead() noexcept override {
 		std::cout << std::this_thread::get_id() << " read: " << reply.message()
 							<< std::endl;
-		if (!quit) {
-			Read();
-		}
+		Read(&reply);
 	}
 	void OnReadDone() noexcept override {
 		std::cout << std::this_thread::get_id() << " read done " << std::endl;
 	}
-	void OnWrite(const HelloRequest &request) noexcept override {
-		std::cout << std::this_thread::get_id() << " write: " << request.name()
-							<< std::endl;
+	void OnWrite() noexcept override {
 		std::lock_guard l{write_mutex};
+		std::cout << std::this_thread::get_id()
+							<< " write: " << pending_writes.front().name() << std::endl;
 		pending_writes.pop_front();
-		if (!pending_writes.empty()) {
+		if (quit) {
+			pending_writes.clear();
+			context.TryCancel(); // cancel read
+			Base::WritesDone();
+			Base::Finish();
+		} else if (!pending_writes.empty()) {
 			Base::Write(pending_writes.front());
 		}
 	}
@@ -182,6 +180,9 @@ public:
 		std::cout << std::this_thread::get_id() << " write done " << std::endl;
 	}
 	void Write(std::string something) {
+		if (quit) {
+			return;
+		}
 		std::lock_guard l{write_mutex};
 		HelloRequest req;
 		req.set_name(something);
@@ -190,7 +191,15 @@ public:
 			Base::Write(pending_writes.front());
 		}
 	}
-	void Quit() { quit = true; }
+	void Finish() {
+		std::lock_guard l{write_mutex};
+		quit = true;
+		if (pending_writes.empty()) {
+			context.TryCancel(); // cancel read
+			Base::WritesDone();
+			Base::Finish();
+		}
+	}
 	std::atomic_bool quit = false;
 };
 
@@ -207,9 +216,7 @@ int main() {
 		bool ok = false;
 		while (cq.Next(&tag, &ok)) {
 			std::cout << "ok: " << ok << std::endl;
-			if (!shutdown) {
-				static_cast<CallBase *>(tag)->Proceed(ok);
-			}
+			static_cast<CallBase *>(tag)->Proceed(ok);
 		}
 	};
 	std::thread t1(f);
@@ -218,19 +225,22 @@ int main() {
 	std::thread t4(f);
 	std::string j;
 	while (std::cin >> j) {
-		c->Write(j);
-		if (j == "end")
+		if (j == "end") {
+			c->Finish();
 			break;
+		}
+		c->Write(j);
 	}
 	shutdown = true;
+	std::this_thread::sleep_for(std::chrono::seconds(4));
 	cq.Shutdown();
 	f();
 	t1.join();
 	t2.join();
 	t3.join();
 	t4.join();
+	delete c;
 	std::cout << " Good" << std::endl;
 
-	delete c;
 	return 0;
 }
