@@ -28,10 +28,7 @@ public:
 	virtual void Proceed(bool ok) = 0;
 };
 
-template <typename W, typename R>
-class ServerAsyncReaderWriter : public CallBase {
-	using Parent = ServerAsyncReaderWriter;
-
+template <typename W, typename R> class ServerAsyncReaderWriter {
 protected:
 	ServerAsyncReaderWriter(grpc::ServerAsyncReaderWriter<W, R> *stream = nullptr,
 													grpc::ServerContext *context = nullptr) noexcept
@@ -41,7 +38,6 @@ protected:
 		this->stream = stream;
 		this->context = context;
 	}
-	void Proceed(bool ok) noexcept override {}
 	void SendInitialMetadata() noexcept {
 		stream->SendInitialMetadata(&initial_metadata_sender);
 	}
@@ -73,6 +69,7 @@ private:
 	virtual void OnCancelled() noexcept {}
 
 private:
+	using Parent = ServerAsyncReaderWriter;
 	struct Creator : public CallBase {
 		Parent *parent;
 		Creator(Parent *parent) : parent(parent) {}
@@ -171,6 +168,8 @@ private:
 		SendInitialMetadata();
 	}
 	void OnCreateError() noexcept override {
+		std::cout << std::this_thread::get_id() << " created error" << std::endl;
+		new CallData(service, cq);
 		Finish({grpc::StatusCode::INTERNAL, "Something went wrong"});
 	}
 	void OnSendInitialMetadata() noexcept override {
@@ -178,6 +177,8 @@ private:
 		Read(&request);
 	}
 	void OnSendInitialMetadataError() noexcept override {
+		std::cout << std::this_thread::get_id() << " send metadata error"
+							<< std::endl;
 		Finish({grpc::StatusCode::INTERNAL, "Something went wrong"});
 	}
 	void OnRead() noexcept override {
@@ -208,7 +209,9 @@ private:
 		std::cout << std::this_thread::get_id() << " write done" << std::endl;
 	}
 	void OnFinish() noexcept override {
-		std::cout << std::this_thread::get_id() << " finished" << std::endl;
+		std::cout << std::this_thread::get_id()
+							<< " finished: " << status.error_code() << " "
+							<< status.error_details() << std::endl;
 		delete this;
 	}
 	void OnCancelled() noexcept override {
