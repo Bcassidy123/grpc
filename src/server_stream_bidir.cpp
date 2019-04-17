@@ -44,6 +44,7 @@ protected:
 				Finish(grpc::Status::CANCELLED);
 			} else if (ok) {
 				OnCreate();
+				state = PROCESS;
 			} else {
 				Finish({grpc::StatusCode::INTERNAL, "Something went wrong"});
 			}
