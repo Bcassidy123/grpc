@@ -1,3 +1,4 @@
+#include <chrono>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -19,6 +20,7 @@ public:
 	virtual ~ClientBase() {}
 	virtual void Proceed(bool ok) = 0;
 	virtual void Write(HelloRequest) {}
+	virtual void Finish() {}
 };
 
 class ClientData : public ClientBase {
@@ -30,6 +32,7 @@ public:
 		stub_ = Greeter::NewStub(channel);
 		stream = stub_->PrepareAsyncSayHelloBidir(&context, cq);
 		stream->StartCall(this);
+		stream->ReadInitialMetadata(this);
 	}
 
 	void Proceed(bool ok) override {
@@ -38,18 +41,18 @@ public:
 			state = PROCESS;
 		} else if (state == PROCESS) {
 		} else {
-			delete this;
+			std::cout << status.error_code() << std::endl;
 		}
 	}
 	void Write(HelloRequest req) override { writer.Write(req); }
 
-private:
-	void Finish() {
-		if (read_completed && write_completed) {
-			stream->Finish(&status, this);
-			state = FINISH;
-		}
+	void Finish() override {
+		context.TryCancel();
+		stream->Finish(&status, this);
+		state = FINISH;
 	}
+
+private:
 	class Reader : public ClientBase {
 		ClientData &parent;
 		HelloReply reply;
@@ -64,7 +67,12 @@ private:
 				// foo(reply)
 				parent.stream->Read(&reply, this);
 			} else {
-				parent.read_completed = true;
+				Finish();
+			}
+		}
+		void Finish() override {
+			parent.read_completed = true;
+			if (parent.write_completed) {
 				parent.Finish();
 			}
 		}
@@ -96,7 +104,13 @@ private:
 					write_in_progress = true;
 				}
 			} else {
-				parent.write_completed = true;
+				Finish();
+			}
+		}
+		void Finish() override {
+			parent.write_completed = true;
+			parent.stream->WritesDone(this);
+			if (parent.read_completed) {
 				parent.Finish();
 			}
 		}
@@ -125,16 +139,34 @@ int main() {
 	void *tag;
 	bool ok = false;
 	bool once = false;
-	new ClientData(channel, &cq);
-	while (cq.Next(&tag, &ok)) {
-		static_cast<ClientBase *>(tag)->Proceed(ok);
-		if (ok && !once) {
-			once = true;
-			HelloRequest req;
-			req.set_name("John doe");
-			static_cast<ClientBase *>(tag)->Write(req);
+	auto c = new ClientData(channel, &cq);
+
+	int i = 0;
+	bool finish_once = false;
+	while (true) {
+		auto nextStatus = cq.AsyncNext(
+				&tag, &ok, std::chrono::system_clock::now() + std::chrono::seconds(2));
+		if (nextStatus == grpc::CompletionQueue::NextStatus::GOT_EVENT) {
+			static_cast<ClientBase *>(tag)->Proceed(ok);
+			if (ok && !once) {
+				once = true;
+				HelloRequest req;
+				req.set_name("John doe");
+				static_cast<ClientBase *>(tag)->Write(req);
+			}
+
+		} else if (nextStatus == grpc::CompletionQueue::NextStatus::TIMEOUT) {
+			++i;
+			if (!finish_once) {
+				finish_once = true;
+				c->Finish();
+			} else {
+				cq.Shutdown();
+			}
+		} else {
+			break;
 		}
 	}
-
+	delete c;
 	return 0;
 }

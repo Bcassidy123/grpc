@@ -1,4 +1,6 @@
+#include <atomic>
 #include <cassert>
+#include <cstdlib>
 #include <functional>
 #include <iostream>
 #include <list>
@@ -35,26 +37,28 @@ protected:
 	ServerAsyncReaderWriter() noexcept : stream(&context) {}
 	void Proceed(bool ok) noexcept override {
 		if (state == CREATE) {
-			reader = std::make_unique<Reader>(*this);
-			writer = std::make_unique<Writer>(*this);
-			OnCreate();
-			state = PROCESS;
+			if (ok) {
+				reader = std::make_unique<Reader>(*this);
+				writer = std::make_unique<Writer>(*this);
+				OnCreate();
+				state = PROCESS;
+			} else {
+				Finish({grpc::StatusCode::UNKNOWN, "could not create"});
+			}
 		} else if (state == PROCESS) {
-			OnSendMetadata();
+			if (ok) {
+				OnSendMetadata();
+			} else {
+				Finish({grpc::StatusCode::UNKNOWN, "could not send metadata"});
+			}
 		} else {
 			OnFinish();
 		}
 	}
 
 	void SendInitialMetadata() noexcept { stream.SendInitialMetadata(this); }
-	void Read() noexcept {
-		if (reader)
-			reader->Read();
-	}
-	void Write(W w) noexcept {
-		if (writer)
-			writer->Write(std::move(w));
-	}
+	void Read() noexcept { reader->Read(); }
+	void Write(W w) noexcept { writer->Write(std::move(w)); }
 	void Write(W, grpc::WriteOptions) noexcept {}
 	void WriteAndFinish(W const &w, grpc::WriteOptions const &opt,
 											grpc::Status const &status) noexcept {
@@ -233,17 +237,35 @@ public:
 
 private:
 	void HandleRpcs() {
+		std::atomic_bool shutdown = false;
 		new CallData(&service, cq.get());
 		auto f = [&]() {
 			void *tag;
 			bool ok;
 			while (cq->Next(&tag, &ok)) {
-				static_cast<CallBase *>(tag)->Proceed(ok);
+				std::cout << "ok: " << ok << std::endl;
+				if (!shutdown)
+					static_cast<CallBase *>(tag)->Proceed(ok);
 			}
 		};
-		f();
+		std::thread t1(f);
+		std::thread t2(f);
+		std::thread t3(f);
+		std::thread t4(f);
+
+		std::string j;
+		std::cin >> j;
+		shutdown = true;
 		server->Shutdown();
 		cq->Shutdown();
+		f();
+
+		t1.join();
+		t2.join();
+		t3.join();
+		t4.join();
+		std::cout << " GOOD" << std::endl;
+		std::cin >> j;
 	}
 };
 
