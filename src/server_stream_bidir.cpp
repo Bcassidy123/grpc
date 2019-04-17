@@ -31,32 +31,17 @@ public:
 template <typename W, typename R>
 class ServerAsyncReaderWriter : public CallBase {
 	using Parent = ServerAsyncReaderWriter;
-	enum State { CREATE, PROCESS, FINISH };
 
 protected:
-	ServerAsyncReaderWriter(grpc::ServerAsyncReaderWriter<W, R> *stream,
-													grpc::ServerContext *context) noexcept
-			: stream(stream), context(context), initial_metadata_sender(this),
-				reader(this), writer(this), write_and_finisher(this) {}
-	void Proceed(bool ok) noexcept override {
-		if (state == CREATE) {
-			if (context->IsCancelled()) {
-				Finish(grpc::Status::CANCELLED);
-			} else if (ok) {
-				OnCreate();
-				state = PROCESS;
-			} else {
-				Finish({grpc::StatusCode::INTERNAL, "Something went wrong"});
-			}
-		} else if (state == PROCESS) {
-			if (context->IsCancelled()) {
-				Finish(grpc::Status::CANCELLED);
-			} else {
-			}
-		} else {
-			OnFinish();
-		}
+	ServerAsyncReaderWriter(grpc::ServerAsyncReaderWriter<W, R> *stream = nullptr,
+													grpc::ServerContext *context = nullptr) noexcept
+			: stream(stream), context(context) {}
+	void Init(grpc::ServerAsyncReaderWriter<W, R> *stream,
+						grpc::ServerContext *context) noexcept {
+		this->stream = stream;
+		this->context = context;
 	}
+	void Proceed(bool ok) noexcept override {}
 	void SendInitialMetadata() noexcept {
 		stream->SendInitialMetadata(&initial_metadata_sender);
 	}
@@ -67,24 +52,38 @@ protected:
 	}
 	void WriteAndFinish(W const &w, grpc::WriteOptions const &opt,
 											grpc::Status const &status) noexcept {
-		stream->WriteAndFinish(w, opt, status, &writer);
+		stream->WriteAndFinish(w, opt, status, &write_and_finisher);
 	}
 	void Finish(grpc::Status const &status) noexcept {
-		assert(state != FINISH);
-		state = FINISH;
-		stream->Finish(status, this);
+		stream->Finish(status, &finisher);
 	}
+	void *RequestTag() noexcept { return &creator; }
+	void *CancelTag() noexcept { return &canceller; }
 
 private:
 	virtual void OnCreate() noexcept {}
+	virtual void OnCreateError() noexcept {}
 	virtual void OnSendInitialMetadata() noexcept {}
+	virtual void OnSendInitialMetadataError() noexcept {}
 	virtual void OnRead() noexcept {}
 	virtual void OnReadDone() noexcept {}
 	virtual void OnWrite() noexcept {}
 	virtual void OnWriteDone() noexcept {}
 	virtual void OnFinish() noexcept {}
+	virtual void OnCancelled() noexcept {}
 
 private:
+	struct Creator : public CallBase {
+		Parent *parent;
+		Creator(Parent *parent) : parent(parent) {}
+		void Proceed(bool ok) override {
+			if (ok) {
+				parent->OnCreate();
+			} else {
+				parent->OnCreateError();
+			}
+		}
+	};
 	struct InitialMetadataSender : public CallBase {
 		Parent *parent;
 		InitialMetadataSender(Parent *parent) : parent(parent) {}
@@ -92,6 +91,7 @@ private:
 			if (ok) {
 				parent->OnSendInitialMetadata();
 			} else {
+				parent->OnSendInitialMetadataError();
 			}
 		}
 	};
@@ -125,19 +125,30 @@ private:
 				parent->OnWrite();
 			}
 			parent->OnWriteDone();
-			parent->state = FINISH;
 			parent->OnFinish();
 		}
+	};
+	struct Finisher : public CallBase {
+		Parent *parent;
+		Finisher(Parent *parent) : parent(parent) {}
+		void Proceed(bool ok) override { parent->OnFinish(); }
+	};
+	struct Canceller : public CallBase {
+		Parent *parent;
+		Canceller(Parent *parent) : parent(parent) {}
+		void Proceed(bool ok) override { parent->OnCancelled(); }
 	};
 
 private:
 	grpc::ServerAsyncReaderWriter<W, R> *stream;
 	grpc::ServerContext *context;
-	State state = CREATE;
-	InitialMetadataSender initial_metadata_sender;
-	Reader reader;
-	Writer writer;
-	WriteAndFinisher write_and_finisher;
+	Creator creator{this};
+	InitialMetadataSender initial_metadata_sender{this};
+	Reader reader{this};
+	Writer writer{this};
+	WriteAndFinisher write_and_finisher{this};
+	Finisher finisher{this};
+	Canceller canceller{this};
 };
 
 class CallData final
@@ -148,8 +159,9 @@ public:
 	CallData(helloworld::Greeter::AsyncService *service,
 					 grpc::ServerCompletionQueue *cq)
 			: Base(&stream, &context), service(service), cq(cq), stream(&context) {
-		context.AsyncNotifyWhenDone(this);
-		service->RequestSayHelloBidir(&context, &stream, cq, cq, this);
+		context.AsyncNotifyWhenDone(Base::CancelTag());
+		service->RequestSayHelloBidir(&context, &stream, cq, cq,
+																	Base::RequestTag());
 	}
 
 private:
@@ -158,9 +170,15 @@ private:
 		new CallData(service, cq);
 		SendInitialMetadata();
 	}
+	void OnCreateError() noexcept override {
+		Finish({grpc::StatusCode::INTERNAL, "Something went wrong"});
+	}
 	void OnSendInitialMetadata() noexcept override {
 		std::cout << std::this_thread::get_id() << " sent metadata " << std::endl;
 		Read(&request);
+	}
+	void OnSendInitialMetadataError() noexcept override {
+		Finish({grpc::StatusCode::INTERNAL, "Something went wrong"});
 	}
 	void OnRead() noexcept override {
 		std::cout << std::this_thread::get_id() << " read: " << request.name()
@@ -192,6 +210,10 @@ private:
 	void OnFinish() noexcept override {
 		std::cout << std::this_thread::get_id() << " finished" << std::endl;
 		delete this;
+	}
+	void OnCancelled() noexcept override {
+		std::cout << std::this_thread::get_id() << " cancelled" << std::endl;
+		Finish(Status::CANCELLED);
 	}
 
 private:
