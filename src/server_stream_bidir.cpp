@@ -41,7 +41,7 @@ protected:
 	void Proceed(bool ok) noexcept override {
 		if (state == CREATE) {
 			if (context->IsCancelled()) {
-				Finish({grpc::StatusCode::CANCELLED, ""});
+				Finish(grpc::Status::CANCELLED);
 			} else if (ok) {
 				OnCreate();
 			} else {
@@ -49,7 +49,7 @@ protected:
 			}
 		} else if (state == PROCESS) {
 			if (context->IsCancelled()) {
-				Finish({grpc::StatusCode::CANCELLED, ""});
+				Finish(grpc::Status::CANCELLED);
 			} else {
 			}
 		} else {
