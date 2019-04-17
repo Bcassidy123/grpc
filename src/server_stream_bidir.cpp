@@ -28,6 +28,15 @@ public:
 	virtual void Proceed(bool ok) = 0;
 };
 
+struct Handler : public CallBase {
+	std::function<void(bool)> func;
+	Handler() = default;
+	template <typename F, typename = std::enable_if_t<!std::is_base_of_v<
+														Handler, std::remove_reference_t<F>>>>
+	Handler(F &&f) : func(f) {}
+	void Proceed(bool ok) override { func(ok); }
+};
+
 template <typename W, typename R> class ServerAsyncReaderWriter {
 protected:
 	ServerAsyncReaderWriter(grpc::ServerAsyncReaderWriter<W, R> *stream = nullptr,
@@ -69,83 +78,41 @@ private:
 	virtual void OnCancelled() noexcept {}
 
 private:
-	using Parent = ServerAsyncReaderWriter;
-	struct Creator : public CallBase {
-		Parent *parent;
-		Creator(Parent *parent) : parent(parent) {}
-		void Proceed(bool ok) override {
-			if (ok) {
-				parent->OnCreate();
-			} else {
-				parent->OnCreateError();
-			}
-		}
-	};
-	struct InitialMetadataSender : public CallBase {
-		Parent *parent;
-		InitialMetadataSender(Parent *parent) : parent(parent) {}
-		void Proceed(bool ok) override {
-			if (ok) {
-				parent->OnSendInitialMetadata();
-			} else {
-				parent->OnSendInitialMetadataError();
-			}
-		}
-	};
-	struct Reader : public CallBase {
-		Parent *parent;
-		Reader(Parent *parent) : parent(parent) {}
-		void Proceed(bool ok) override {
-			if (ok) {
-				parent->OnRead();
-			} else {
-				parent->OnReadDone();
-			}
-		}
-	};
-	struct Writer : public CallBase {
-		Parent *parent;
-		Writer(Parent *parent) : parent(parent) {}
-		void Proceed(bool ok) override {
-			if (ok) {
-				parent->OnWrite();
-			} else {
-				parent->OnWriteDone();
-			}
-		}
-	};
-	struct WriteAndFinisher : public CallBase {
-		Parent *parent;
-		WriteAndFinisher(Parent *parent) : parent(parent) {}
-		void Proceed(bool ok) override {
-			if (ok) {
-				parent->OnWrite();
-			}
-			parent->OnWriteDone();
-			parent->OnFinish();
-		}
-	};
-	struct Finisher : public CallBase {
-		Parent *parent;
-		Finisher(Parent *parent) : parent(parent) {}
-		void Proceed(bool ok) override { parent->OnFinish(); }
-	};
-	struct Canceller : public CallBase {
-		Parent *parent;
-		Canceller(Parent *parent) : parent(parent) {}
-		void Proceed(bool ok) override { parent->OnCancelled(); }
-	};
-
-private:
 	grpc::ServerAsyncReaderWriter<W, R> *stream;
 	grpc::ServerContext *context;
-	Creator creator{this};
-	InitialMetadataSender initial_metadata_sender{this};
-	Reader reader{this};
-	Writer writer{this};
-	WriteAndFinisher write_and_finisher{this};
-	Finisher finisher{this};
-	Canceller canceller{this};
+	Handler creator{[this](bool ok) {
+		if (ok)
+			OnCreate();
+		else
+			OnCreateError();
+	}};
+	Handler initial_metadata_sender{[this](bool ok) {
+		if (ok)
+			OnSendInitialMetadata();
+		else
+			OnSendInitialMetadataError();
+	}};
+	Handler reader{[this](bool ok) {
+		if (ok)
+			OnRead();
+		else
+			OnReadDone();
+	}};
+	Handler writer{[this](bool ok) {
+		if (ok)
+			OnWrite();
+		else
+			OnWriteDone();
+	}};
+	Handler write_and_finisher{[this](bool ok) {
+		if (ok) {
+			OnWrite();
+		}
+		OnWriteDone();
+		OnFinish();
+	}};
+	Handler finisher{[this](bool) { OnFinish(); }};
+	Handler canceller{[this](bool) { OnCancelled(); }};
 };
 
 class CallData final
