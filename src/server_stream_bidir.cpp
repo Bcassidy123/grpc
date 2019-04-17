@@ -34,7 +34,8 @@ class ServerAsyncReaderWriter : public CallBase {
 	enum State { CREATE, PROCESS, FINISH };
 
 protected:
-	ServerAsyncReaderWriter() noexcept : stream(&context) {}
+	ServerAsyncReaderWriter(grpc::ServerContext *context) noexcept
+			: stream(context) {}
 	void Proceed(bool ok) noexcept override {
 		if (state == CREATE) {
 			if (ok) {
@@ -136,7 +137,6 @@ private:
 
 protected:
 	grpc::ServerAsyncReaderWriter<W, R> stream;
-	grpc::ServerContext context;
 
 private:
 	State state = CREATE;
@@ -153,7 +153,7 @@ class CallData final
 public:
 	CallData(helloworld::Greeter::AsyncService *service,
 					 grpc::ServerCompletionQueue *cq)
-			: service(service), cq(cq) {
+			: Base(&context), service(service), cq(cq) {
 		service->RequestSayHelloBidir(&context, &stream, cq, cq, this);
 	}
 
@@ -211,6 +211,7 @@ private:
 private:
 	helloworld::Greeter::AsyncService *service;
 	grpc::ServerCompletionQueue *cq;
+	grpc::ServerContext context;
 	grpc::Status status;
 	std::list<HelloReply> pending_writes;
 	bool should_finish = false;
