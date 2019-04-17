@@ -35,10 +35,10 @@ class ServerAsyncReaderWriter : public CallBase {
 
 protected:
 	ServerAsyncReaderWriter(grpc::ServerContext *context) noexcept
-			: stream(context) {}
+			: stream(context), context(context) {}
 	void Proceed(bool ok) noexcept override {
 		if (state == CREATE) {
-			if (ok) {
+			if (ok && !context->IsCancelled()) {
 				reader = std::make_unique<Reader>(*this);
 				writer = std::make_unique<Writer>(*this);
 				OnCreate();
@@ -47,7 +47,7 @@ protected:
 				Finish({grpc::StatusCode::UNKNOWN, "could not create"});
 			}
 		} else if (state == PROCESS) {
-			if (ok) {
+			if (ok && !context->IsCancelled()) {
 				OnSendMetadata();
 			} else {
 				Finish({grpc::StatusCode::UNKNOWN, "could not send metadata"});
@@ -137,6 +137,7 @@ private:
 
 protected:
 	grpc::ServerAsyncReaderWriter<W, R> stream;
+	grpc::ServerContext *context;
 
 private:
 	State state = CREATE;
@@ -148,12 +149,11 @@ class CallData final
 		: public ServerAsyncReaderWriter<HelloReply, HelloRequest> {
 	using Base = ServerAsyncReaderWriter<HelloReply, HelloRequest>;
 
-	int i = 0;
-
 public:
 	CallData(helloworld::Greeter::AsyncService *service,
 					 grpc::ServerCompletionQueue *cq)
 			: Base(&context), service(service), cq(cq) {
+		context.AsyncNotifyWhenDone(this);
 		service->RequestSayHelloBidir(&context, &stream, cq, cq, this);
 	}
 
@@ -172,22 +172,15 @@ private:
 							<< std::endl;
 		HelloReply reply;
 		reply.set_message("You sent: " + request.name());
-		if (i++ < 3) {
-			Read();
-			std::lock_guard l{pending_writes_mutex};
-			pending_writes.push_back(reply);
-			if (pending_writes.size() == 1) {
-				Write(pending_writes.front());
-			}
+		Read();
+		std::lock_guard l{pending_writes_mutex};
+		pending_writes.push_back(reply);
+		if (pending_writes.size() == 1) {
+			Write(pending_writes.front());
 		}
 	}
 	void OnReadDone() noexcept override {
 		std::cout << std::this_thread::get_id() << " read done" << std::endl;
-		std::lock_guard l{pending_writes_mutex};
-		if (pending_writes.empty())
-			Finish(Status::OK);
-		else
-			should_finish = true;
 	}
 	void OnWrite(HelloReply const &reply) noexcept override {
 		std::cout << std::this_thread::get_id() << " wrote: " << reply.message()
@@ -196,8 +189,6 @@ private:
 		pending_writes.pop_front();
 		if (!pending_writes.empty()) {
 			Write(pending_writes.front());
-		} else if (should_finish) {
-			Finish(Status::OK);
 		}
 	}
 	void OnWriteDone() noexcept override {
@@ -214,7 +205,6 @@ private:
 	grpc::ServerContext context;
 	grpc::Status status;
 	std::list<HelloReply> pending_writes;
-	bool should_finish = false;
 	std::mutex pending_writes_mutex;
 };
 
@@ -249,6 +239,7 @@ private:
 					static_cast<CallBase *>(tag)->Proceed(ok);
 			}
 		};
+
 		std::thread t1(f);
 		std::thread t2(f);
 		std::thread t3(f);
@@ -266,7 +257,6 @@ private:
 		t3.join();
 		t4.join();
 		std::cout << " GOOD" << std::endl;
-		std::cin >> j;
 	}
 };
 

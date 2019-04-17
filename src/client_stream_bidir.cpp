@@ -1,6 +1,7 @@
 #include <atomic>
 #include <chrono>
 #include <iostream>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -135,6 +136,8 @@ class CallData : public ClientAsyncReaderWriter<HelloRequest, HelloReply> {
 	std::unique_ptr<grpc::ClientAsyncReaderWriter<HelloRequest, HelloReply>>
 			stream;
 	grpc::ClientContext context;
+	std::list<HelloRequest> pending_writes;
+	std::mutex write_mutex;
 
 public:
 	CallData(std::shared_ptr<Channel> channel, grpc::CompletionQueue *cq)
@@ -151,9 +154,7 @@ public:
 	void OnReadInitialMetadata() noexcept override {
 		std::cout << std::this_thread::get_id() << " read metadata" << std::endl;
 		Read();
-		HelloRequest req;
-		req.set_name("Bob Tabor");
-		Write(req);
+		Write("Bob Tabor");
 	}
 	void OnFinish() noexcept override {
 		std::cout << std::this_thread::get_id() << " finish" << std::endl;
@@ -161,6 +162,9 @@ public:
 	void OnRead(const HelloReply &reply) noexcept override {
 		std::cout << std::this_thread::get_id() << " read: " << reply.message()
 							<< std::endl;
+		if (!quit) {
+			Read();
+		}
 	}
 	void OnReadDone() noexcept override {
 		std::cout << std::this_thread::get_id() << " read done " << std::endl;
@@ -168,11 +172,26 @@ public:
 	void OnWrite(const HelloRequest &request) noexcept override {
 		std::cout << std::this_thread::get_id() << " write: " << request.name()
 							<< std::endl;
-		WritesDone();
+		std::lock_guard l{write_mutex};
+		pending_writes.pop_front();
+		if (!pending_writes.empty()) {
+			Base::Write(pending_writes.front());
+		}
 	}
 	void OnWriteDone() noexcept override {
 		std::cout << std::this_thread::get_id() << " write done " << std::endl;
 	}
+	void Write(std::string something) {
+		std::lock_guard l{write_mutex};
+		HelloRequest req;
+		req.set_name(something);
+		pending_writes.push_back(req);
+		if (pending_writes.size() == 1) {
+			Base::Write(pending_writes.front());
+		}
+	}
+	void Quit() { quit = true; }
+	std::atomic_bool quit = false;
 };
 
 int main() {
@@ -198,7 +217,11 @@ int main() {
 	std::thread t3(f);
 	std::thread t4(f);
 	std::string j;
-	std::cin >> j;
+	while (std::cin >> j) {
+		c->Write(j);
+		if (j == "end")
+			break;
+	}
 	shutdown = true;
 	cq.Shutdown();
 	f();
