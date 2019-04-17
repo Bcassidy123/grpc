@@ -3,6 +3,7 @@
 #include <iostream>
 #include <list>
 #include <memory>
+#include <mutex>
 #include <string>
 
 #include <windows.h>
@@ -30,7 +31,7 @@ class ServerAsyncReaderWriter : public CallBase {
 	using Parent = ServerAsyncReaderWriter;
 	enum State { CREATE, PROCESS, FINISH };
 
-public:
+protected:
 	ServerAsyncReaderWriter() noexcept : stream(&context) {}
 	void Proceed(bool ok) noexcept override {
 		if (state == CREATE) {
@@ -44,6 +45,7 @@ public:
 			OnFinish();
 		}
 	}
+
 	void SendInitialMetadata() noexcept { stream.SendInitialMetadata(this); }
 	void Read() noexcept {
 		if (reader)
@@ -56,18 +58,11 @@ public:
 	void Write(W, grpc::WriteOptions) noexcept {}
 	void WriteAndFinish(W const &w, grpc::WriteOptions const &opt,
 											grpc::Status const &status) noexcept {
-		if (writer)
-			writer->WriteAndFinish(w, opt, status);
-		else
-			Finish(status);
+		writer->WriteAndFinish(w, opt, status);
 	}
 	void Finish(grpc::Status const &status) noexcept {
-		if (writer) {
-			writer->Finish(status);
-		} else {
-			state = FINISH;
-			stream.Finish(status, this);
-		}
+		state = FINISH;
+		stream.Finish(status, this);
 	}
 
 private:
@@ -97,63 +92,41 @@ private:
 		}
 	};
 	class Writer : public CallBase {
-		bool write_in_progress = false;
 		Parent &parent;
-		std::list<W> pending_writes;
-		bool should_finish = false;
-		grpc::Status finish_status;
+		W write;
+		bool write_and_finish = false;
 
 	public:
 		Writer(Parent &parent) : parent(parent) {}
 		void Proceed(bool ok) override {
 			if (ok) {
-				assert(pending_writes.empty() == false);
-				write_in_progress = false;
-				parent.OnWrite(pending_writes.front());
-				pending_writes.pop_front();
-				if (!pending_writes.empty()) {
-					parent.stream.Write(pending_writes.front(), this);
-					write_in_progress = true;
-				} else if (should_finish) {
-					auto status = finish_status;
-					auto &p = parent;
-					parent.writer.reset();
-					p.OnWriteDone();
-					p.Finish(status);
+				parent.OnWrite(write);
+				if (write_and_finish) {
+					parent.OnWriteDone();
 				}
 			} else {
+				parent.OnWriteDone();
+			}
+			if (write_and_finish) {
 				auto &p = parent;
-				parent.writer.reset();
-				p.OnWriteDone();
+				p.writer.reset();
+				p.state = FINISH;
+				p.Proceed(ok);
 			}
 		}
 		void Write(W w) {
-			pending_writes.emplace_back(std::move(w));
-			if (!write_in_progress) {
-				parent.stream.Write(pending_writes.front(), this);
-				write_in_progress = true;
-			}
+			write = std::move(w);
+			parent.stream.Write(write, this);
+		}
+		void Write(W w, grpc::WriteOptions opt) noexcept {
+			write = std::move(w);
+			parent.stream.Write(write, opt, this);
 		}
 		void WriteAndFinish(W w, grpc::WriteOptions opt,
 												grpc::Status const &status) noexcept {
-			pending_writes.emplace_back(std::move(w));
-			should_finish = true;
-			finish_status = status;
-			if (!write_in_progress) {
-				parent.stream.WriteAndFinish(pending_writes.front(), opt, status, this);
-				write_in_progress = true;
-			}
-		}
-		void Finish(grpc::Status const &status) noexcept {
-			if (write_in_progress) {
-				should_finish = true;
-				finish_status = status;
-			} else {
-				auto &p = parent;
-				parent.writer.reset();
-				p.OnWriteDone();
-				p.Finish(status);
-			}
+			write_and_finish = true;
+			write = std::move(w);
+			parent.stream.WriteAndFinish(write, opt, status, this);
 		}
 	};
 
@@ -182,45 +155,62 @@ public:
 
 private:
 	void OnCreate() noexcept override {
-		std::cout << "created" << std::endl;
+		std::cout << std::this_thread::get_id() << " created" << std::endl;
 		new CallData(service, cq);
 		SendInitialMetadata();
 	}
 	void OnSendMetadata() noexcept override {
-		std::cout << "sent metadata " << std::endl;
+		std::cout << std::this_thread::get_id() << " sent metadata " << std::endl;
 		Read();
 	}
 	void OnRead(HelloRequest const &request) noexcept override {
-		std::cout << "read: " << request.name() << std::endl;
+		std::cout << std::this_thread::get_id() << " read: " << request.name()
+							<< std::endl;
 		HelloReply reply;
 		reply.set_message("You sent: " + request.name());
 		if (i++ < 3) {
 			Read();
-			Write(reply);
-		} else {
-			WriteAndFinish(reply, {}, status);
+			std::lock_guard l{pending_writes_mutex};
+			pending_writes.push_back(reply);
+			if (pending_writes.size() == 1) {
+				Write(pending_writes.front());
+			}
 		}
 	}
 	void OnReadDone() noexcept override {
-		std::cout << "read done" << std::endl;
-		Finish(status);
+		std::cout << std::this_thread::get_id() << " read done" << std::endl;
+		std::lock_guard l{pending_writes_mutex};
+		if (pending_writes.empty())
+			Finish(Status::OK);
+		else
+			should_finish = true;
 	}
 	void OnWrite(HelloReply const &reply) noexcept override {
-		std::cout << "wrote: " << reply.message() << std::endl;
+		std::cout << std::this_thread::get_id() << " wrote: " << reply.message()
+							<< std::endl;
+		std::lock_guard l{pending_writes_mutex};
+		pending_writes.pop_front();
+		if (!pending_writes.empty()) {
+			Write(pending_writes.front());
+		} else if (should_finish) {
+			Finish(Status::OK);
+		}
 	}
 	void OnWriteDone() noexcept override {
-		std::cout << "write done" << std::endl;
+		std::cout << std::this_thread::get_id() << " write done" << std::endl;
 	}
 	void OnFinish() noexcept override {
+		std::cout << std::this_thread::get_id() << " finished" << std::endl;
 		delete this;
-		std::cout << "finished" << std::endl;
 	}
 
 private:
 	helloworld::Greeter::AsyncService *service;
 	grpc::ServerCompletionQueue *cq;
 	grpc::Status status;
-	bool read_done;
+	std::list<HelloReply> pending_writes;
+	bool should_finish = false;
+	std::mutex pending_writes_mutex;
 };
 
 class ServerImpl {
@@ -244,12 +234,16 @@ public:
 private:
 	void HandleRpcs() {
 		new CallData(&service, cq.get());
-		void *tag;
-		bool ok;
-		while (cq->Next(&tag, &ok)) {
-			std::cout << ok << std::endl;
-			static_cast<CallBase *>(tag)->Proceed(ok);
-		}
+		auto f = [&]() {
+			void *tag;
+			bool ok;
+			while (cq->Next(&tag, &ok)) {
+				static_cast<CallBase *>(tag)->Proceed(ok);
+			}
+		};
+		f();
+		server->Shutdown();
+		cq->Shutdown();
 	}
 };
 
