@@ -28,7 +28,7 @@ public:
 	virtual void Proceed(bool ok) = 0;
 };
 
-template <typename C, typename W, typename R>
+template <typename W, typename R>
 class ServerAsyncReaderWriter : public CallBase {
 	using Parent = ServerAsyncReaderWriter;
 	enum State { CREATE, PROCESS, FINISH };
@@ -145,8 +145,8 @@ private:
 };
 
 class CallData final
-		: public ServerAsyncReaderWriter<CallData, HelloReply, HelloRequest> {
-	using Base = ServerAsyncReaderWriter<CallData, HelloReply, HelloRequest>;
+		: public ServerAsyncReaderWriter<HelloReply, HelloRequest> {
+	using Base = ServerAsyncReaderWriter<HelloReply, HelloRequest>;
 
 	int i = 0;
 
