@@ -14,6 +14,8 @@
 
 #include "helloworld.grpc.pb.h"
 
+#include "common.hpp"
+
 using grpc::Server;
 using grpc::ServerBuilder;
 using grpc::ServerContext;
@@ -21,21 +23,6 @@ using grpc::Status;
 using helloworld::Greeter;
 using helloworld::HelloReply;
 using helloworld::HelloRequest;
-
-class CallBase {
-public:
-	virtual ~CallBase() {}
-	virtual void Proceed(bool ok) = 0;
-};
-
-struct Handler : public CallBase {
-	std::function<void(bool)> func;
-	Handler() = default;
-	template <typename F, typename = std::enable_if_t<!std::is_base_of_v<
-														Handler, std::remove_reference_t<F>>>>
-	Handler(F &&f) : func(f) {}
-	void Proceed(bool ok) override { func(ok); }
-};
 
 template <typename W, typename R> class ServerAsyncReaderWriter {
 protected:
@@ -225,7 +212,7 @@ private:
 			while (cq->Next(&tag, &ok)) {
 				std::cout << "ok: " << ok << std::endl;
 				if (!shutdown)
-					static_cast<CallBase *>(tag)->Proceed(ok);
+					static_cast<HandlerBase *>(tag)->Proceed(ok);
 			}
 		};
 
