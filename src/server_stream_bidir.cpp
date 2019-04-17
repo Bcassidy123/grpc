@@ -59,7 +59,7 @@ protected:
 	void SendInitialMetadata() noexcept {
 		stream->SendInitialMetadata(&initial_metadata_sender);
 	}
-	void Read() noexcept { stream->Read(&read, &reader); }
+	void Read(R *r) noexcept { stream->Read(r, &reader); }
 	void Write(W const &w) noexcept { stream->Write(w, &writer); }
 	void Write(W const &w, grpc::WriteOptions const &opt) noexcept {
 		stream->Write(w, opt, &writer);
@@ -77,7 +77,7 @@ protected:
 private:
 	virtual void OnCreate() noexcept {}
 	virtual void OnSendInitialMetadata() noexcept {}
-	virtual void OnRead(R const &) noexcept {}
+	virtual void OnRead() noexcept {}
 	virtual void OnReadDone() noexcept {}
 	virtual void OnWrite() noexcept {}
 	virtual void OnWriteDone() noexcept {}
@@ -99,7 +99,7 @@ private:
 		Reader(Parent *parent) : parent(parent) {}
 		void Proceed(bool ok) override {
 			if (ok) {
-				parent->OnRead(parent->read);
+				parent->OnRead();
 			} else {
 				parent->OnReadDone();
 			}
@@ -133,7 +133,6 @@ private:
 	grpc::ServerAsyncReaderWriter<W, R> *stream;
 	grpc::ServerContext *context;
 	State state = CREATE;
-	R read;
 	InitialMetadataSender initial_metadata_sender;
 	Reader reader;
 	Writer writer;
@@ -160,14 +159,14 @@ private:
 	}
 	void OnSendInitialMetadata() noexcept override {
 		std::cout << std::this_thread::get_id() << " sent metadata " << std::endl;
-		Read();
+		Read(&request);
 	}
-	void OnRead(HelloRequest const &request) noexcept override {
+	void OnRead() noexcept override {
 		std::cout << std::this_thread::get_id() << " read: " << request.name()
 							<< std::endl;
 		HelloReply reply;
 		reply.set_message("You sent: " + request.name());
-		Read();
+		Read(&request);
 		std::lock_guard l{pending_writes_mutex};
 		pending_writes.push_back(reply);
 		if (pending_writes.size() == 1) {
@@ -200,6 +199,7 @@ private:
 	grpc::ServerAsyncReaderWriter<HelloReply, HelloRequest> stream;
 	grpc::ServerContext context;
 	grpc::Status status;
+	HelloRequest request;
 	std::list<HelloReply> pending_writes;
 	std::mutex pending_writes_mutex;
 };
