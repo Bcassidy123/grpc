@@ -63,8 +63,6 @@ protected:
 		++num_in_flight;
 		stream->Finish(status, &finisher);
 	}
-	void *RequestTag() noexcept { return &creator; }
-	void *DoneTag() noexcept { return &doner; }
 
 private:
 	virtual void OnCreate(bool ok) noexcept {}
@@ -77,7 +75,7 @@ private:
 	virtual void OnFinally() noexcept {}
 
 private:
-	void Finally() {
+	void Finally() noexcept {
 		if (finished && num_in_flight == 0) {
 			OnFinally();
 		}
