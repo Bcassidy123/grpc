@@ -136,15 +136,24 @@ private:
 		}
 	}
 	void OnFinish(bool ok) noexcept override {
-		std::cout << std::this_thread::get_id()
-							<< " finished: " << status.error_code() << " "
-							<< status.error_details() << std::endl;
+		if (ok) {
+			std::cout << std::this_thread::get_id()
+								<< " finished: " << status.error_code() << " "
+								<< status.error_details() << std::endl;
+			// done will be called after this
+		} else {
+			std::cout << std::this_thread::get_id() << " finished error "
+								<< std::endl;
+		}
 		delete this;
 	}
 	void OnDone(bool ok) noexcept override {
-		std::cout << std::this_thread::get_id() << " done" << std::endl;
-		if (context.IsCancelled())
-			Finish(Status::CANCELLED);
+		std::cout << std::this_thread::get_id() << " done "
+							<< (context.IsCancelled() ? "cancelled" : "") << std::endl;
+		if (context.IsCancelled()) {
+			status = Status::CANCELLED;
+			OnFinish(true);
+		}
 	}
 
 private:
@@ -190,22 +199,25 @@ private:
 			}
 		};
 
-		std::thread t1(f);
-		std::thread t2(f);
-		std::thread t3(f);
-		std::thread t4(f);
-
-		std::string j;
-		std::cin >> j;
-		shutdown = true;
-		server->Shutdown();
-		cq->Shutdown();
 		f();
+		/*
+				std::thread t1(f);
+				std::thread t2(f);
+				std::thread t3(f);
+				std::thread t4(f);
 
-		t1.join();
-		t2.join();
-		t3.join();
-		t4.join();
+				std::string j;
+				std::cin >> j;
+				shutdown = true;
+				server->Shutdown();
+				cq->Shutdown();
+				f();
+
+				t1.join();
+				t2.join();
+				t3.join();
+				t4.join();
+				*/
 		std::cout << " GOOD" << std::endl;
 	}
 };
