@@ -250,26 +250,25 @@ private:
 			}
 		};
 
+		std::thread t1(f);
+		std::thread t2(f);
+		std::thread t3(f);
+		std::thread t4(f);
+
+		std::string j;
+		std::cin >> j;
+		shutdown = true;
+		server->Shutdown();
+		cq->Shutdown();
 		f();
-		/*
-				std::thread t1(f);
-				std::thread t2(f);
-				std::thread t3(f);
-				std::thread t4(f);
 
-				std::string j;
-				std::cin >> j;
-				shutdown = true;
-				server->Shutdown();
-				cq->Shutdown();
-				f();
+		t1.join();
+		t2.join();
+		t3.join();
+		t4.join();
 
-				t1.join();
-				t2.join();
-				t3.join();
-				t4.join();
-				*/
 		std::cout << " GOOD" << std::endl;
+		std::cin >> j;
 	}
 };
 
