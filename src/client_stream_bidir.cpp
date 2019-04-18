@@ -6,6 +6,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <type_traits>
 
 #include <grpcpp/grpcpp.h>
 
@@ -21,27 +22,39 @@ using helloworld::Greeter;
 using helloworld::HelloReply;
 using helloworld::HelloRequest;
 
-template <typename W, typename R> class ClientAsyncReaderWriter {
+template <typename W, typename R, bool Threadsafe = true>
+class ClientAsyncReaderWriter {
 protected:
-	ClientAsyncReaderWriter(
-			grpc::ClientAsyncReaderWriter<W, R> *stream = nullptr) noexcept
-			: stream(stream) {}
 	virtual ~ClientAsyncReaderWriter() {}
 	void Init(grpc::ClientAsyncReaderWriter<W, R> *stream) noexcept {
 		this->stream = stream;
+		num_in_flight = 1;
+		stream->StartCall(&creator);
 	}
 	void ReadInitialMetadata() noexcept {
+		++num_in_flight;
 		stream->ReadInitialMetadata(&initial_metadata_reader);
 	}
-	void Read(R *r) noexcept { stream->Read(r, &reader); }
-	void Write(W const &w) noexcept { stream->Write(w, &writer); }
+	void Read(R *r) noexcept {
+		++num_in_flight;
+		stream->Read(r, &reader);
+	}
+	void Write(W const &w) noexcept {
+		++num_in_flight;
+		stream->Write(w, &writer);
+	}
 	void Write(W const &w, grpc::WriteOptions const &opt) noexcept {
+		++num_in_flight;
 		stream->Write(w, opt, &writer);
 	}
-	void WritesDone() noexcept { stream->WritesDone(&writes_doner); }
-	void Finish(Status *status) noexcept { stream->Finish(status, &finisher); }
-
-	void *StartTag() noexcept { return &creator; }
+	void WritesDone() noexcept {
+		++num_in_flight;
+		stream->WritesDone(&writes_doner);
+	}
+	void Finish(Status *status) noexcept {
+		++num_in_flight;
+		stream->Finish(status, &finisher);
+	}
 
 private:
 	virtual void OnCreate(bool ok) noexcept {}
@@ -50,17 +63,50 @@ private:
 	virtual void OnWrite(bool ok) noexcept {}
 	virtual void OnWritesDone(bool ok) noexcept {}
 	virtual void OnFinish(bool ok) noexcept {}
+	virtual void OnFinally() noexcept {}
+
+private:
+	void Finally() noexcept {
+		if (finished && num_in_flight == 0) {
+			OnFinally();
+		}
+	}
 
 private:
 	grpc::ClientAsyncReaderWriter<W, R> *stream;
-	Handler creator = [this](bool ok) noexcept { OnCreate(ok); };
+	std::conditional_t<Threadsafe, std::atomic_bool, bool> finished;
+	std::conditional_t<Threadsafe, std::atomic_uint, unsigned> num_in_flight;
+	Handler creator = [this](bool ok) noexcept {
+		OnCreate(ok);
+		--num_in_flight;
+		Finally();
+	};
 	Handler initial_metadata_reader = [this](bool ok) noexcept {
 		OnReadInitialMetadata(ok);
+		--num_in_flight;
+		Finally();
 	};
-	Handler reader = [this](bool ok) noexcept { OnRead(ok); };
-	Handler writer = [this](bool ok) noexcept { OnWrite(ok); };
-	Handler writes_doner = [this](bool ok) noexcept { OnWritesDone(ok); };
-	Handler finisher{[this](bool ok) noexcept { OnFinish(ok); }};
+	Handler reader = [this](bool ok) noexcept {
+		OnRead(ok);
+		--num_in_flight;
+		Finally();
+	};
+	Handler writer = [this](bool ok) noexcept {
+		OnWrite(ok);
+		--num_in_flight;
+		Finally();
+	};
+	Handler writes_doner = [this](bool ok) noexcept {
+		OnWritesDone(ok);
+		--num_in_flight;
+		Finally();
+	};
+	Handler finisher{[this](bool ok) noexcept {
+		OnFinish(ok);
+		finished = true;
+		--num_in_flight;
+		Finally();
+	}};
 };
 class CallData : private ClientAsyncReaderWriter<HelloRequest, HelloReply> {
 
@@ -76,7 +122,6 @@ public:
 		auto stub = Greeter::NewStub(channel);
 		stream = stub->PrepareAsyncSayHelloBidir(&context, cq);
 		Base::Init(stream.get());
-		stream->StartCall(StartTag());
 	}
 	void Write(std::string something) {}
 	void Finish() {}
