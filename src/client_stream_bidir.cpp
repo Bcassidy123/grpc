@@ -26,6 +26,7 @@ protected:
 	ClientAsyncReaderWriter(
 			grpc::ClientAsyncReaderWriter<W, R> *stream = nullptr) noexcept
 			: stream(stream) {}
+	virtual ~ClientAsyncReaderWriter() {}
 	void Init(grpc::ClientAsyncReaderWriter<W, R> *stream) noexcept {
 		this->stream = stream;
 	}
@@ -82,7 +83,7 @@ private:
 	Handler writes_doner = [this](bool ok) noexcept { OnWriteDone(); };
 	Handler finisher = [this](bool ok) noexcept { OnFinish(); };
 };
-class CallData : public ClientAsyncReaderWriter<HelloRequest, HelloReply> {
+class CallData : private ClientAsyncReaderWriter<HelloRequest, HelloReply> {
 
 	using Base = ClientAsyncReaderWriter<HelloRequest, HelloReply>;
 
@@ -93,6 +94,7 @@ class CallData : public ClientAsyncReaderWriter<HelloRequest, HelloReply> {
 	HelloReply reply;
 	std::list<HelloRequest> pending_writes;
 	std::mutex write_mutex;
+	bool should_finish = false;
 
 public:
 	CallData(std::shared_ptr<Channel> channel, grpc::CompletionQueue *cq) {
@@ -112,9 +114,16 @@ public:
 	}
 	void Finish() {
 		std::lock_guard l{write_mutex};
+		if (pending_writes.empty()) { // not currently writing
+			context.TryCancel(); // still reading so will need to cancel at least that
+		} else {
+			should_finish = true;
+		}
+	}
+	void ForceFinish() {
+		std::lock_guard l{write_mutex};
 		pending_writes.clear();
-		context.TryCancel(); // cancel everything
-		Base::Finish(&status);
+		context.TryCancel(); // still reading so will need to cancel at least that
 	}
 
 private: // overrides
@@ -122,15 +131,25 @@ private: // overrides
 		std::cout << std::this_thread::get_id() << " create" << std::endl;
 		ReadInitialMetadata();
 	}
+	void OnCreateError() noexcept override {
+		std::cout << std::this_thread::get_id() << " create error" << std::endl;
+		Finish();
+	}
 	void OnReadInitialMetadata() noexcept override {
 		std::cout << std::this_thread::get_id() << " read metadata" << std::endl;
 		Read(&reply);
+	}
+	void OnReadInitialMetadataError() noexcept override {
+		std::cout << std::this_thread::get_id() << " read metadata error"
+							<< std::endl;
+		Finish();
 	}
 	void OnFinish() noexcept override {
 		std::cout << std::this_thread::get_id() << " finish" << std::endl;
 		std::cout << std::this_thread::get_id()
 							<< " status: " << status.error_code() << " "
 							<< status.error_details() << std::endl;
+		delete this;
 	}
 	void OnRead() noexcept override {
 		std::cout << std::this_thread::get_id() << " read: " << reply.message()
@@ -139,6 +158,7 @@ private: // overrides
 	}
 	void OnReadDone() noexcept override {
 		std::cout << std::this_thread::get_id() << " read done " << std::endl;
+		Base::Finish(&status);
 	}
 	void OnWrite() noexcept override {
 		std::lock_guard l{write_mutex};
@@ -147,12 +167,15 @@ private: // overrides
 		pending_writes.pop_front();
 		if (!pending_writes.empty()) {
 			Base::Write(pending_writes.front());
+		} else if (should_finish) {
+			WritesDone();
 		}
 	}
 	void OnWriteDone() noexcept override {
 		std::cout << std::this_thread::get_id() << " write done " << std::endl;
 		std::lock_guard l{write_mutex};
 		pending_writes.clear();
+		context.TryCancel();
 	}
 };
 
@@ -191,7 +214,6 @@ int main() {
 	t2.join();
 	t3.join();
 	t4.join();
-	delete c;
 	std::cout << " Good" << std::endl;
 
 	return 0;
