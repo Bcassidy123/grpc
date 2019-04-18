@@ -246,7 +246,7 @@ private:
 			while (cq->Next(&tag, &ok)) {
 				std::cout << "ok: " << ok << std::endl;
 				if (!shutdown)
-					static_cast<HandlerBase *>(tag)->Proceed(ok);
+					static_cast<Handler *>(tag)->Proceed(ok);
 			}
 		};
 
