@@ -58,7 +58,6 @@ protected:
 		++num_in_flight;
 		stream->Finish(status, &finisher);
 	}
-	unsigned NumInFlight() const noexcept { return num_in_flight; }
 	void *RequestTag() noexcept { return &creator; }
 	void *DoneTag() noexcept { return &doner; }
 
@@ -70,37 +69,53 @@ private:
 	virtual void OnWriteAndFinish(bool ok) noexcept {}
 	virtual void OnFinish(bool ok) noexcept {}
 	virtual void OnDone(bool ok) noexcept {}
+	virtual void OnFinally() noexcept {}
 
 private:
+	void Finally() {
+		if (finished && num_in_flight == 0) {
+			OnFinally();
+		}
+	}
 	grpc::ServerAsyncReaderWriter<W, R> *stream;
+	std::atomic_bool finished = false;
 	std::atomic_uint num_in_flight = 2;
 	Handler creator = [this](bool ok) {
 		--num_in_flight;
 		OnCreate(ok);
+		Finally();
 	};
 	Handler initial_metadata_sender = [this](bool ok) {
 		--num_in_flight;
 		OnSendInitialMetadata(ok);
+		Finally();
 	};
 	Handler reader = [this](bool ok) {
 		--num_in_flight;
 		OnRead(ok);
+		Finally();
 	};
 	Handler writer = [this](bool ok) {
 		--num_in_flight;
 		OnWrite(ok);
+		Finally();
 	};
 	Handler write_and_finisher = [this](bool ok) {
 		--num_in_flight;
 		OnWriteAndFinish(ok);
+		Finally();
 	};
 	Handler finisher = [this](bool ok) {
+		finished = true;
 		--num_in_flight;
 		OnFinish(ok);
+		Finally();
 	};
 	Handler doner = [this](bool ok) {
+		finished = true;
 		--num_in_flight;
 		OnDone(ok);
+		Finally();
 	};
 };
 
@@ -118,12 +133,6 @@ public:
 	}
 
 private:
-	void Suicide() noexcept {
-		if (finished && !NumInFlight())
-			delete this;
-	}
-
-private:
 	void OnCreate(bool ok) noexcept override {
 		new CallData(service, cq);
 		if (ok) {
@@ -133,7 +142,6 @@ private:
 			std::cout << std::this_thread::get_id() << " created error" << std::endl;
 			Finish({grpc::StatusCode::INTERNAL, "Something went wrong"});
 		}
-		Suicide();
 	}
 	void OnSendInitialMetadata(bool ok) noexcept override {
 		if (ok) {
@@ -144,7 +152,6 @@ private:
 								<< std::endl;
 			Finish({grpc::StatusCode::INTERNAL, "Something went wrong"});
 		}
-		Suicide();
 	}
 	void OnRead(bool ok) noexcept override {
 		if (ok) {
@@ -161,7 +168,6 @@ private:
 		} else {
 			std::cout << std::this_thread::get_id() << " read done" << std::endl;
 		}
-		Suicide();
 	}
 	void OnWrite(bool ok) noexcept override {
 		if (ok) {
@@ -175,7 +181,6 @@ private:
 		} else {
 			std::cout << std::this_thread::get_id() << " write done" << std::endl;
 		}
-		Suicide();
 	}
 	void OnFinish(bool ok) noexcept override {
 		if (ok) {
@@ -187,8 +192,6 @@ private:
 			std::cout << std::this_thread::get_id() << " finished error "
 								<< std::endl;
 		}
-		finished = true;
-		Suicide();
 	}
 	void OnDone(bool ok) noexcept override {
 		std::cout << std::this_thread::get_id() << " done "
@@ -196,9 +199,8 @@ private:
 		if (context.IsCancelled()) {
 			status = Status::CANCELLED;
 		}
-		finished = true;
-		Suicide();
 	}
+	void OnFinally() noexcept override { delete this; }
 
 private:
 	helloworld::Greeter::AsyncService *service;
@@ -209,8 +211,6 @@ private:
 	HelloRequest request;
 	std::list<HelloReply> pending_writes;
 	std::mutex pending_writes_mutex;
-	std::atomic_bool finished = false;
-	std::atomic_uint num_in_flight = 0;
 };
 
 class ServerImpl {
