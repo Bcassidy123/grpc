@@ -7,6 +7,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <type_traits>
 
 #include <windows.h>
 
@@ -24,7 +25,8 @@ using helloworld::Greeter;
 using helloworld::HelloReply;
 using helloworld::HelloRequest;
 
-template <typename W, typename R> class ServerAsyncReaderWriter {
+template <typename W, typename R, bool Threadsafe = true>
+class ServerAsyncReaderWriter {
 protected:
 	virtual ~ServerAsyncReaderWriter() {}
 	// F is void(grpc::ServerAyncReaderWriter *stream, grpc::context *context,
@@ -81,8 +83,8 @@ private:
 		}
 	}
 	grpc::ServerAsyncReaderWriter<W, R> *stream;
-	std::atomic_bool finished;
-	std::atomic_uint num_in_flight;
+	std::conditional_t<Threadsafe, std::atomic_bool, bool> finished;
+	std::conditional_t<Threadsafe, std::atomic_uint, unsigned> num_in_flight;
 	Handler creator = [this](bool ok) {
 		OnCreate(ok);
 		--num_in_flight;
