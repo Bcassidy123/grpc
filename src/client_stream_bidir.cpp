@@ -124,7 +124,10 @@ public:
 		Base::Init(stream.get());
 	}
 	void Write(std::string something) {}
-	void Finish() {}
+	void Finish() {
+		context.TryCancel();
+		Base::Finish(&status);
+	}
 
 private: // overrides
 	void OnCreate(bool ok) noexcept override {
@@ -138,7 +141,6 @@ private: // overrides
 	void OnReadInitialMetadata(bool ok) noexcept override {
 		if (ok) {
 			std::cout << std::this_thread::get_id() << " read metadata" << std::endl;
-			Base::Finish(&status);
 		} else {
 			std::cout << std::this_thread::get_id() << " read metadata error"
 								<< std::endl;
@@ -196,13 +198,7 @@ int main() {
 			static_cast<Handler *>(tag)->Proceed(ok);
 		}
 	};
-	void *tag;
-	bool ok = false;
-	while (cq.Next(&tag, &ok)) {
-		std::cout << "ok: " << ok << std::endl;
-		static_cast<Handler *>(tag)->Proceed(ok);
-	}
-	/*
+
 	std::thread t1(f);
 	std::thread t2(f);
 	std::thread t3(f);
@@ -210,21 +206,16 @@ int main() {
 	std::string j;
 	while (std::cin >> j) {
 		if (j == "end") {
-			//	c->Finish();
+			c->Finish();
 			break;
 		}
-		//	c->Write(j);
+		c->Write(j);
 	}
-	*/
-	// f();
-	/*
-	shutdown = true;
 	cq.Shutdown();
 	t1.join();
 	t2.join();
 	t3.join();
 	t4.join();
-	*/
 	std::cout << " Good" << std::endl;
 
 	return 0;
