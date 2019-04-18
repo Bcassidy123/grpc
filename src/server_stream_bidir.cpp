@@ -26,12 +26,17 @@ using helloworld::HelloRequest;
 
 template <typename W, typename R> class ServerAsyncReaderWriter {
 protected:
-	ServerAsyncReaderWriter(
-			grpc::ServerAsyncReaderWriter<W, R> *stream = nullptr) noexcept
-			: stream(stream) {}
 	virtual ~ServerAsyncReaderWriter() {}
-	void Init(grpc::ServerAsyncReaderWriter<W, R> *stream) noexcept {
+	// F is void(grpc::ServerAyncReaderWriter *stream, grpc::context *context,
+	// void *tag) which requests the stream from the service
+	template <typename F>
+	void Init(grpc::ServerAsyncReaderWriter<W, R> *stream,
+						grpc::ServerContext *context, F &&f) noexcept {
 		this->stream = stream;
+		finished = false;
+		num_in_flight = 2;
+		context->AsyncNotifyWhenDone(&doner);
+		f(stream, context, &creator);
 	}
 	void SendInitialMetadata() noexcept {
 		++num_in_flight;
@@ -78,8 +83,8 @@ private:
 		}
 	}
 	grpc::ServerAsyncReaderWriter<W, R> *stream;
-	std::atomic_bool finished = false;
-	std::atomic_uint num_in_flight = 2;
+	std::atomic_bool finished;
+	std::atomic_uint num_in_flight;
 	Handler creator = [this](bool ok) {
 		OnCreate(ok);
 		--num_in_flight;
@@ -126,10 +131,10 @@ class CallData final
 public:
 	CallData(helloworld::Greeter::AsyncService *service,
 					 grpc::ServerCompletionQueue *cq)
-			: Base(&stream), service(service), cq(cq), stream(&context) {
-		context.AsyncNotifyWhenDone(Base::DoneTag());
-		service->RequestSayHelloBidir(&context, &stream, cq, cq,
-																	Base::RequestTag());
+			: service(service), cq(cq), stream(&context) {
+		Init(&stream, &context, [&](auto *stream, auto *context, void *tag) {
+			service->RequestSayHelloBidir(context, stream, cq, cq, tag);
+		});
 	}
 
 private:
