@@ -44,44 +44,23 @@ protected:
 	void *StartTag() noexcept { return &creator; }
 
 private:
-	virtual void OnCreate() noexcept {}
-	virtual void OnCreateError() noexcept {}
-	virtual void OnReadInitialMetadata() noexcept {}
-	virtual void OnReadInitialMetadataError() noexcept {}
-	virtual void OnRead() noexcept {}
-	virtual void OnReadDone() noexcept {}
-	virtual void OnWrite() noexcept {}
-	virtual void OnWriteDone() noexcept {}
-	virtual void OnFinish() noexcept {}
+	virtual void OnCreate(bool ok) noexcept {}
+	virtual void OnReadInitialMetadata(bool ok) noexcept {}
+	virtual void OnRead(bool ok) noexcept {}
+	virtual void OnWrite(bool ok) noexcept {}
+	virtual void OnWritesDone(bool ok) noexcept {}
+	virtual void OnFinish(bool ok) noexcept {}
 
 private:
 	grpc::ClientAsyncReaderWriter<W, R> *stream;
-	Handler creator = [this](bool ok) noexcept {
-		if (ok)
-			OnCreate();
-		else
-			OnCreateError();
-	};
+	Handler creator = [this](bool ok) noexcept { OnCreate(ok); };
 	Handler initial_metadata_reader = [this](bool ok) noexcept {
-		if (ok)
-			OnReadInitialMetadata();
-		else
-			OnReadInitialMetadataError();
+		OnReadInitialMetadata(ok);
 	};
-	Handler reader = [this](bool ok) noexcept {
-		if (ok)
-			OnRead();
-		else
-			OnReadDone();
-	};
-	Handler writer = [this](bool ok) noexcept {
-		if (ok)
-			OnWrite();
-		else
-			WritesDone();
-	};
-	Handler writes_doner = [this](bool ok) noexcept { OnWriteDone(); };
-	Handler finisher = [this](bool ok) noexcept { OnFinish(); };
+	Handler reader = [this](bool ok) noexcept { OnRead(ok); };
+	Handler writer = [this](bool ok) noexcept { OnWrite(ok); };
+	Handler writes_doner = [this](bool ok) noexcept { OnWritesDone(ok); };
+	Handler finisher{[this](bool ok) noexcept { OnFinish(ok); }};
 };
 class CallData : private ClientAsyncReaderWriter<HelloRequest, HelloReply> {
 
@@ -91,10 +70,6 @@ class CallData : private ClientAsyncReaderWriter<HelloRequest, HelloReply> {
 			stream;
 	grpc::ClientContext context;
 	grpc::Status status;
-	HelloReply reply;
-	std::list<HelloRequest> pending_writes;
-	std::mutex write_mutex;
-	bool should_finish = false;
 
 public:
 	CallData(std::shared_ptr<Channel> channel, grpc::CompletionQueue *cq) {
@@ -103,79 +78,61 @@ public:
 		Base::Init(stream.get());
 		stream->StartCall(StartTag());
 	}
-	void Write(std::string something) {
-		std::lock_guard l{write_mutex};
-		HelloRequest req;
-		req.set_name(something);
-		pending_writes.push_back(req);
-		if (pending_writes.size() == 1) {
-			Base::Write(pending_writes.front());
-		}
-	}
-	void Finish() {
-		std::lock_guard l{write_mutex};
-		if (pending_writes.empty()) { // not currently writing
-			context.TryCancel(); // still reading so will need to cancel at least that
-		} else {
-			should_finish = true;
-		}
-	}
-	void ForceFinish() {
-		std::lock_guard l{write_mutex};
-		pending_writes.clear();
-		context.TryCancel(); // still reading so will need to cancel at least that
-	}
+	void Write(std::string something) {}
+	void Finish() {}
 
 private: // overrides
-	void OnCreate() noexcept override {
-		std::cout << std::this_thread::get_id() << " create" << std::endl;
-		ReadInitialMetadata();
+	void OnCreate(bool ok) noexcept override {
+		if (ok) {
+			std::cout << std::this_thread::get_id() << " create" << std::endl;
+			ReadInitialMetadata();
+		} else {
+			std::cout << std::this_thread::get_id() << " create error" << std::endl;
+		}
 	}
-	void OnCreateError() noexcept override {
-		std::cout << std::this_thread::get_id() << " create error" << std::endl;
-		Finish();
+	void OnReadInitialMetadata(bool ok) noexcept override {
+		if (ok) {
+			std::cout << std::this_thread::get_id() << " read metadata" << std::endl;
+			Base::Finish(&status);
+		} else {
+			std::cout << std::this_thread::get_id() << " read metadata error"
+								<< std::endl;
+		}
 	}
-	void OnReadInitialMetadata() noexcept override {
-		std::cout << std::this_thread::get_id() << " read metadata" << std::endl;
-		Read(&reply);
+	void OnRead(bool ok) noexcept override {
+		if (ok) {
+			std::cout << std::this_thread::get_id() << " read" << std::endl;
+			//	std::cout << std::this_thread::get_id() << " read: " <<
+			// reply.message()
+			//			<< std::endl;
+		} else {
+			std::cout << std::this_thread::get_id() << " read error " << std::endl;
+		}
 	}
-	void OnReadInitialMetadataError() noexcept override {
-		std::cout << std::this_thread::get_id() << " read metadata error"
-							<< std::endl;
-		Finish();
+	void OnWrite(bool ok) noexcept override {
+		if (ok) {
+			std::cout << std::this_thread::get_id() << " write" << std::endl;
+			// std::cout << std::this_thread::get_id()
+			//						<< " write: " << pending_writes.front().name() << std::endl;
+		} else {
+			std::cout << std::this_thread::get_id() << " write error " << std::endl;
+			WritesDone();
+		}
 	}
-	void OnFinish() noexcept override {
+	void OnWritesDone(bool ok) noexcept override {
+		if (ok) {
+			std::cout << std::this_thread::get_id() << " write done " << std::endl;
+		} else {
+			std::cout << std::this_thread::get_id() << " write done error"
+								<< std::endl;
+		}
+	}
+	void OnFinish(bool ok) noexcept override {
 		std::cout << std::this_thread::get_id() << " finish" << std::endl;
 		std::cout << std::this_thread::get_id()
 							<< " status: " << status.error_code() << " "
 							<< status.error_details() << std::endl;
-		delete this;
-	}
-	void OnRead() noexcept override {
-		std::cout << std::this_thread::get_id() << " read: " << reply.message()
-							<< std::endl;
-		Read(&reply);
-	}
-	void OnReadDone() noexcept override {
-		std::cout << std::this_thread::get_id() << " read done " << std::endl;
-		Base::Finish(&status);
-	}
-	void OnWrite() noexcept override {
-		std::lock_guard l{write_mutex};
-		std::cout << std::this_thread::get_id()
-							<< " write: " << pending_writes.front().name() << std::endl;
-		pending_writes.pop_front();
-		if (!pending_writes.empty()) {
-			Base::Write(pending_writes.front());
-		} else if (should_finish) {
-			WritesDone();
-		}
-	}
-	void OnWriteDone() noexcept override {
-		std::cout << std::this_thread::get_id() << " write done " << std::endl;
-		std::lock_guard l{write_mutex};
-		pending_writes.clear();
-		context.TryCancel();
+		// delete this;
 	}
 };
 
@@ -186,15 +143,21 @@ int main() {
 			grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
 	CompletionQueue cq;
 	auto c = new CallData(channel, &cq);
-	std::atomic_bool shutdown = false;
 	auto f = [&]() {
 		void *tag;
 		bool ok = false;
 		while (cq.Next(&tag, &ok)) {
 			std::cout << "ok: " << ok << std::endl;
-			static_cast<HandlerBase *>(tag)->Proceed(ok);
+			static_cast<Handler *>(tag)->Proceed(ok);
 		}
 	};
+	void *tag;
+	bool ok = false;
+	while (cq.Next(&tag, &ok)) {
+		std::cout << "ok: " << ok << std::endl;
+		static_cast<Handler *>(tag)->Proceed(ok);
+	}
+	/*
 	std::thread t1(f);
 	std::thread t2(f);
 	std::thread t3(f);
@@ -202,18 +165,21 @@ int main() {
 	std::string j;
 	while (std::cin >> j) {
 		if (j == "end") {
-			c->Finish();
+			//	c->Finish();
 			break;
 		}
-		c->Write(j);
+		//	c->Write(j);
 	}
+	*/
+	// f();
+	/*
 	shutdown = true;
 	cq.Shutdown();
-	f();
 	t1.join();
 	t2.join();
 	t3.join();
 	t4.join();
+	*/
 	std::cout << " Good" << std::endl;
 
 	return 0;
