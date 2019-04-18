@@ -53,53 +53,26 @@ protected:
 	void *DoneTag() noexcept { return &doner; }
 
 private:
-	virtual void OnCreate() noexcept {}
-	virtual void OnCreateError() noexcept {}
-	virtual void OnSendInitialMetadata() noexcept {}
-	virtual void OnSendInitialMetadataError() noexcept {}
-	virtual void OnRead() noexcept {}
-	virtual void OnReadDone() noexcept {}
-	virtual void OnWrite() noexcept {}
-	virtual void OnWriteDone() noexcept {}
-	virtual void OnFinish() noexcept {}
-	virtual void OnDone() noexcept {}
+	virtual void OnCreate(bool ok) noexcept {}
+	virtual void OnSendInitialMetadata(bool ok) noexcept {}
+	virtual void OnRead(bool ok) noexcept {}
+	virtual void OnWrite(bool ok) noexcept {}
+	virtual void OnWriteAndFinish(bool ok) noexcept {}
+	virtual void OnFinish(bool ok) noexcept {}
+	virtual void OnDone(bool ok) noexcept {}
 
 private:
 	grpc::ServerAsyncReaderWriter<W, R> *stream;
 	grpc::ServerContext *context;
-	Handler creator{[this](bool ok) {
-		if (ok)
-			OnCreate();
-		else
-			OnCreateError();
-	}};
-	Handler initial_metadata_sender{[this](bool ok) {
-		if (ok)
-			OnSendInitialMetadata();
-		else
-			OnSendInitialMetadataError();
-	}};
-	Handler reader{[this](bool ok) {
-		if (ok)
-			OnRead();
-		else
-			OnReadDone();
-	}};
-	Handler writer{[this](bool ok) {
-		if (ok)
-			OnWrite();
-		else
-			OnWriteDone();
-	}};
-	Handler write_and_finisher{[this](bool ok) {
-		if (ok) {
-			OnWrite();
-		}
-		OnWriteDone();
-		OnFinish();
-	}};
-	Handler finisher{[this](bool) { OnFinish(); }};
-	Handler doner{[this](bool) { OnDone(); }};
+	Handler creator = [this](bool ok) { OnCreate(ok); };
+	Handler initial_metadata_sender = [this](bool ok) {
+		OnSendInitialMetadata(ok);
+	};
+	Handler reader = [this](bool ok) { OnRead(ok); };
+	Handler writer = [this](bool ok) { OnWrite(ok); };
+	Handler write_and_finisher = [this](bool ok) { OnWriteAndFinish(ok); };
+	Handler finisher = [this](bool ok) { OnFinish(ok); };
+	Handler doner = [this](bool ok) { OnDone(ok); };
 };
 
 class CallData final
@@ -116,59 +89,62 @@ public:
 	}
 
 private:
-	void OnCreate() noexcept override {
-		std::cout << std::this_thread::get_id() << " created" << std::endl;
+	void OnCreate(bool ok) noexcept override {
 		new CallData(service, cq);
-		SendInitialMetadata();
-	}
-	void OnCreateError() noexcept override {
-		std::cout << std::this_thread::get_id() << " created error" << std::endl;
-		new CallData(service, cq);
-		Finish({grpc::StatusCode::INTERNAL, "Something went wrong"});
-	}
-	void OnSendInitialMetadata() noexcept override {
-		std::cout << std::this_thread::get_id() << " sent metadata " << std::endl;
-		Read(&request);
-	}
-	void OnSendInitialMetadataError() noexcept override {
-		std::cout << std::this_thread::get_id() << " send metadata error"
-							<< std::endl;
-		Finish({grpc::StatusCode::INTERNAL, "Something went wrong"});
-	}
-	void OnRead() noexcept override {
-		std::cout << std::this_thread::get_id() << " read: " << request.name()
-							<< std::endl;
-		HelloReply reply;
-		reply.set_message("You sent: " + request.name());
-		Read(&request);
-		std::lock_guard l{pending_writes_mutex};
-		pending_writes.push_back(reply);
-		if (pending_writes.size() == 1) {
-			Write(pending_writes.front());
+		if (ok) {
+			std::cout << std::this_thread::get_id() << " created" << std::endl;
+			SendInitialMetadata();
+		} else {
+			std::cout << std::this_thread::get_id() << " created error" << std::endl;
+			Finish({grpc::StatusCode::INTERNAL, "Something went wrong"});
 		}
 	}
-	void OnReadDone() noexcept override {
-		std::cout << std::this_thread::get_id() << " read done" << std::endl;
-	}
-	void OnWrite() noexcept override {
-		std::lock_guard l{pending_writes_mutex};
-		std::cout << std::this_thread::get_id()
-							<< " wrote: " << pending_writes.front().message() << std::endl;
-		pending_writes.pop_front();
-		if (!pending_writes.empty()) {
-			Write(pending_writes.front());
+	void OnSendInitialMetadata(bool ok) noexcept override {
+		if (ok) {
+			std::cout << std::this_thread::get_id() << " sent metadata " << std::endl;
+			Read(&request);
+		} else {
+			std::cout << std::this_thread::get_id() << " send metadata error"
+								<< std::endl;
+			Finish({grpc::StatusCode::INTERNAL, "Something went wrong"});
 		}
 	}
-	void OnWriteDone() noexcept override {
-		std::cout << std::this_thread::get_id() << " write done" << std::endl;
+	void OnRead(bool ok) noexcept override {
+		if (ok) {
+			std::cout << std::this_thread::get_id() << " read: " << request.name()
+								<< std::endl;
+			HelloReply reply;
+			reply.set_message("You sent: " + request.name());
+			Read(&request);
+			std::lock_guard l{pending_writes_mutex};
+			pending_writes.push_back(reply);
+			if (pending_writes.size() == 1) {
+				Write(pending_writes.front());
+			}
+		} else {
+			std::cout << std::this_thread::get_id() << " read done" << std::endl;
+		}
 	}
-	void OnFinish() noexcept override {
+	void OnWrite(bool ok) noexcept override {
+		if (ok) {
+			std::lock_guard l{pending_writes_mutex};
+			std::cout << std::this_thread::get_id()
+								<< " wrote: " << pending_writes.front().message() << std::endl;
+			pending_writes.pop_front();
+			if (!pending_writes.empty()) {
+				Write(pending_writes.front());
+			}
+		} else {
+			std::cout << std::this_thread::get_id() << " write done" << std::endl;
+		}
+	}
+	void OnFinish(bool ok) noexcept override {
 		std::cout << std::this_thread::get_id()
 							<< " finished: " << status.error_code() << " "
 							<< status.error_details() << std::endl;
 		delete this;
 	}
-	void OnDone() noexcept override {
+	void OnDone(bool ok) noexcept override {
 		std::cout << std::this_thread::get_id() << " done" << std::endl;
 		if (context.IsCancelled())
 			Finish(Status::CANCELLED);
