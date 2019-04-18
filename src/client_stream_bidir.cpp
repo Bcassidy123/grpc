@@ -116,6 +116,10 @@ class CallData : private ClientAsyncReaderWriter<HelloRequest, HelloReply> {
 			stream;
 	grpc::ClientContext context;
 	grpc::Status status;
+	HelloReply reply;
+	std::list<HelloRequest> pending_requests;
+	std::mutex pending_requests_mutex;
+	std::atomic_bool finished = false;
 
 public:
 	CallData(std::shared_ptr<Channel> channel, grpc::CompletionQueue *cq) {
@@ -123,23 +127,36 @@ public:
 		stream = stub->PrepareAsyncSayHelloBidir(&context, cq);
 		Base::Init(stream.get());
 	}
-	void Write(std::string something) {}
-	void Finish() {
-		context.TryCancel();
-		Base::Finish(&status);
+	void Write(std::string something) {
+		std::lock_guard l{pending_requests_mutex};
+		HelloRequest request;
+		request.set_name(something);
+		pending_requests.push_back(std::move(request));
+		if (pending_requests.size() == 1) { // there weren't any pending
+			Base::Write(pending_requests.front());
+		}
 	}
+	void Finish() {
+		std::lock_guard l{pending_requests_mutex};
+		finished = true;
+		if (pending_requests.empty()) {
+			context.TryCancel();
+		}
+	}
+	bool Finished() const noexcept { return finished; }
 
 private: // overrides
 	void OnCreate(bool ok) noexcept override {
 		if (ok) {
+			Base::ReadInitialMetadata();
 			std::cout << std::this_thread::get_id() << " create" << std::endl;
-			ReadInitialMetadata();
 		} else {
 			std::cout << std::this_thread::get_id() << " create error" << std::endl;
 		}
 	}
 	void OnReadInitialMetadata(bool ok) noexcept override {
 		if (ok) {
+			Base::Read(&reply);
 			std::cout << std::this_thread::get_id() << " read metadata" << std::endl;
 		} else {
 			std::cout << std::this_thread::get_id() << " read metadata error"
@@ -148,30 +165,42 @@ private: // overrides
 	}
 	void OnRead(bool ok) noexcept override {
 		if (ok) {
-			std::cout << std::this_thread::get_id() << " read" << std::endl;
-			//	std::cout << std::this_thread::get_id() << " read: " <<
-			// reply.message()
-			//			<< std::endl;
+			Base::Read(&reply);
+			std::cout << std::this_thread::get_id() << " read: " << reply.message()
+								<< std::endl;
 		} else {
 			std::cout << std::this_thread::get_id() << " read error " << std::endl;
+			Base::Finish(&status);
 		}
 	}
 	void OnWrite(bool ok) noexcept override {
+		std::lock_guard l{pending_requests_mutex};
 		if (ok) {
-			std::cout << std::this_thread::get_id() << " write" << std::endl;
-			// std::cout << std::this_thread::get_id()
-			//						<< " write: " << pending_writes.front().name() << std::endl;
+			std::cout << std::this_thread::get_id()
+								<< " write: " << pending_requests.front().name() << std::endl;
+			pending_requests.pop_front();
+			if (finished) {
+				WritesDone();
+			}
+			if (!pending_requests.empty()) {
+				Base::Write(pending_requests.front());
+			}
 		} else {
 			std::cout << std::this_thread::get_id() << " write error " << std::endl;
 			WritesDone();
 		}
 	}
 	void OnWritesDone(bool ok) noexcept override {
+		std::lock_guard l{pending_requests_mutex};
+		pending_requests.clear();
 		if (ok) {
 			std::cout << std::this_thread::get_id() << " write done " << std::endl;
 		} else {
 			std::cout << std::this_thread::get_id() << " write done error"
 								<< std::endl;
+		}
+		if (finished) {
+			context.TryCancel();
 		}
 	}
 	void OnFinish(bool ok) noexcept override {
@@ -179,8 +208,8 @@ private: // overrides
 		std::cout << std::this_thread::get_id()
 							<< " status: " << status.error_code() << " "
 							<< status.error_details() << std::endl;
-		// delete this;
 	}
+	void OnFinally() noexcept override { delete this; }
 };
 
 int main() {
@@ -211,6 +240,8 @@ int main() {
 		}
 		c->Write(j);
 	}
+	while (!c->Finished())
+		;
 	cq.Shutdown();
 	t1.join();
 	t2.join();
