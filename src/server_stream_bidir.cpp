@@ -81,40 +81,40 @@ private:
 	std::atomic_bool finished = false;
 	std::atomic_uint num_in_flight = 2;
 	Handler creator = [this](bool ok) {
-		--num_in_flight;
 		OnCreate(ok);
+		--num_in_flight;
 		Finally();
 	};
 	Handler initial_metadata_sender = [this](bool ok) {
-		--num_in_flight;
 		OnSendInitialMetadata(ok);
+		--num_in_flight;
 		Finally();
 	};
 	Handler reader = [this](bool ok) {
-		--num_in_flight;
 		OnRead(ok);
+		--num_in_flight;
 		Finally();
 	};
 	Handler writer = [this](bool ok) {
-		--num_in_flight;
 		OnWrite(ok);
+		--num_in_flight;
 		Finally();
 	};
 	Handler write_and_finisher = [this](bool ok) {
-		--num_in_flight;
 		OnWriteAndFinish(ok);
+		--num_in_flight;
 		Finally();
 	};
 	Handler finisher = [this](bool ok) {
+		OnFinish(ok);
 		finished = true;
 		--num_in_flight;
-		OnFinish(ok);
 		Finally();
 	};
 	Handler doner = [this](bool ok) {
+		OnDone(ok);
 		finished = true;
 		--num_in_flight;
-		OnDone(ok);
 		Finally();
 	};
 };
