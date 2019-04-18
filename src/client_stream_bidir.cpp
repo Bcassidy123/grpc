@@ -104,6 +104,23 @@ public:
 		Base::Init(stream.get(), &status);
 		stream->StartCall(StartTag());
 	}
+	void Write(std::string something) {
+		std::lock_guard l{write_mutex};
+		HelloRequest req;
+		req.set_name(something);
+		pending_writes.push_back(req);
+		if (pending_writes.size() == 1) {
+			Base::Write(pending_writes.front());
+		}
+	}
+	void Finish() {
+		std::lock_guard l{write_mutex};
+		pending_writes.clear();
+		context.TryCancel(); // cancel everything
+		Base::Finish();
+	}
+
+private: // overrides
 	void OnCreate() noexcept override {
 		std::cout << std::this_thread::get_id() << " create" << std::endl;
 		ReadInitialMetadata();
@@ -139,21 +156,6 @@ public:
 		std::cout << std::this_thread::get_id() << " write done " << std::endl;
 		std::lock_guard l{write_mutex};
 		pending_writes.clear();
-	}
-	void Write(std::string something) {
-		std::lock_guard l{write_mutex};
-		HelloRequest req;
-		req.set_name(something);
-		pending_writes.push_back(req);
-		if (pending_writes.size() == 1) {
-			Base::Write(pending_writes.front());
-		}
-	}
-	void Finish() {
-		std::lock_guard l{write_mutex};
-		pending_writes.clear();
-		context.TryCancel(); // cancel everything
-		Base::Finish();
 	}
 };
 
