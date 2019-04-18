@@ -34,20 +34,31 @@ protected:
 		this->stream = stream;
 	}
 	void SendInitialMetadata() noexcept {
+		++num_in_flight;
 		stream->SendInitialMetadata(&initial_metadata_sender);
 	}
-	void Read(R *r) noexcept { stream->Read(r, &reader); }
-	void Write(W const &w) noexcept { stream->Write(w, &writer); }
+	void Read(R *r) noexcept {
+		++num_in_flight;
+		stream->Read(r, &reader);
+	}
+	void Write(W const &w) noexcept {
+		++num_in_flight;
+		stream->Write(w, &writer);
+	}
 	void Write(W const &w, grpc::WriteOptions const &opt) noexcept {
+		++num_in_flight;
 		stream->Write(w, opt, &writer);
 	}
 	void WriteAndFinish(W const &w, grpc::WriteOptions const &opt,
 											grpc::Status const &status) noexcept {
+		++num_in_flight;
 		stream->WriteAndFinish(w, opt, status, &write_and_finisher);
 	}
 	void Finish(grpc::Status const &status) noexcept {
+		++num_in_flight;
 		stream->Finish(status, &finisher);
 	}
+	unsigned NumInFlight() const noexcept { return num_in_flight; }
 	void *RequestTag() noexcept { return &creator; }
 	void *DoneTag() noexcept { return &doner; }
 
@@ -62,15 +73,35 @@ private:
 
 private:
 	grpc::ServerAsyncReaderWriter<W, R> *stream;
-	Handler creator = [this](bool ok) { OnCreate(ok); };
+	std::atomic_uint num_in_flight = 2;
+	Handler creator = [this](bool ok) {
+		--num_in_flight;
+		OnCreate(ok);
+	};
 	Handler initial_metadata_sender = [this](bool ok) {
+		--num_in_flight;
 		OnSendInitialMetadata(ok);
 	};
-	Handler reader = [this](bool ok) { OnRead(ok); };
-	Handler writer = [this](bool ok) { OnWrite(ok); };
-	Handler write_and_finisher = [this](bool ok) { OnWriteAndFinish(ok); };
-	Handler finisher = [this](bool ok) { OnFinish(ok); };
-	Handler doner = [this](bool ok) { OnDone(ok); };
+	Handler reader = [this](bool ok) {
+		--num_in_flight;
+		OnRead(ok);
+	};
+	Handler writer = [this](bool ok) {
+		--num_in_flight;
+		OnWrite(ok);
+	};
+	Handler write_and_finisher = [this](bool ok) {
+		--num_in_flight;
+		OnWriteAndFinish(ok);
+	};
+	Handler finisher = [this](bool ok) {
+		--num_in_flight;
+		OnFinish(ok);
+	};
+	Handler doner = [this](bool ok) {
+		--num_in_flight;
+		OnDone(ok);
+	};
 };
 
 class CallData final
@@ -87,6 +118,12 @@ public:
 	}
 
 private:
+	void Suicide() noexcept {
+		if (finished && !NumInFlight())
+			delete this;
+	}
+
+private:
 	void OnCreate(bool ok) noexcept override {
 		new CallData(service, cq);
 		if (ok) {
@@ -96,6 +133,7 @@ private:
 			std::cout << std::this_thread::get_id() << " created error" << std::endl;
 			Finish({grpc::StatusCode::INTERNAL, "Something went wrong"});
 		}
+		Suicide();
 	}
 	void OnSendInitialMetadata(bool ok) noexcept override {
 		if (ok) {
@@ -106,6 +144,7 @@ private:
 								<< std::endl;
 			Finish({grpc::StatusCode::INTERNAL, "Something went wrong"});
 		}
+		Suicide();
 	}
 	void OnRead(bool ok) noexcept override {
 		if (ok) {
@@ -122,6 +161,7 @@ private:
 		} else {
 			std::cout << std::this_thread::get_id() << " read done" << std::endl;
 		}
+		Suicide();
 	}
 	void OnWrite(bool ok) noexcept override {
 		if (ok) {
@@ -135,6 +175,7 @@ private:
 		} else {
 			std::cout << std::this_thread::get_id() << " write done" << std::endl;
 		}
+		Suicide();
 	}
 	void OnFinish(bool ok) noexcept override {
 		if (ok) {
@@ -146,15 +187,17 @@ private:
 			std::cout << std::this_thread::get_id() << " finished error "
 								<< std::endl;
 		}
-		delete this;
+		finished = true;
+		Suicide();
 	}
 	void OnDone(bool ok) noexcept override {
 		std::cout << std::this_thread::get_id() << " done "
 							<< (context.IsCancelled() ? "cancelled" : "") << std::endl;
 		if (context.IsCancelled()) {
 			status = Status::CANCELLED;
-			OnFinish(true);
 		}
+		finished = true;
+		Suicide();
 	}
 
 private:
@@ -166,6 +209,8 @@ private:
 	HelloRequest request;
 	std::list<HelloReply> pending_writes;
 	std::mutex pending_writes_mutex;
+	std::atomic_bool finished = false;
+	std::atomic_uint num_in_flight = 0;
 };
 
 class ServerImpl {
