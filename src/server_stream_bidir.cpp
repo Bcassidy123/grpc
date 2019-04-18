@@ -26,13 +26,11 @@ using helloworld::HelloRequest;
 
 template <typename W, typename R> class ServerAsyncReaderWriter {
 protected:
-	ServerAsyncReaderWriter(grpc::ServerAsyncReaderWriter<W, R> *stream = nullptr,
-													grpc::ServerContext *context = nullptr) noexcept
-			: stream(stream), context(context) {}
-	void Init(grpc::ServerAsyncReaderWriter<W, R> *stream,
-						grpc::ServerContext *context) noexcept {
+	ServerAsyncReaderWriter(
+			grpc::ServerAsyncReaderWriter<W, R> *stream = nullptr) noexcept
+			: stream(stream) {}
+	void Init(grpc::ServerAsyncReaderWriter<W, R> *stream) noexcept {
 		this->stream = stream;
-		this->context = context;
 	}
 	void SendInitialMetadata() noexcept {
 		stream->SendInitialMetadata(&initial_metadata_sender);
@@ -63,7 +61,6 @@ private:
 
 private:
 	grpc::ServerAsyncReaderWriter<W, R> *stream;
-	grpc::ServerContext *context;
 	Handler creator = [this](bool ok) { OnCreate(ok); };
 	Handler initial_metadata_sender = [this](bool ok) {
 		OnSendInitialMetadata(ok);
@@ -82,7 +79,7 @@ class CallData final
 public:
 	CallData(helloworld::Greeter::AsyncService *service,
 					 grpc::ServerCompletionQueue *cq)
-			: Base(&stream, &context), service(service), cq(cq), stream(&context) {
+			: Base(&stream), service(service), cq(cq), stream(&context) {
 		context.AsyncNotifyWhenDone(Base::DoneTag());
 		service->RequestSayHelloBidir(&context, &stream, cq, cq,
 																	Base::RequestTag());
