@@ -11,6 +11,8 @@
 
 #include "helloworld.grpc.pb.h"
 
+#include "common.hpp"
+
 using grpc::Channel;
 using grpc::ClientContext;
 using grpc::CompletionQueue;
@@ -19,16 +21,7 @@ using helloworld::Greeter;
 using helloworld::HelloReply;
 using helloworld::HelloRequest;
 
-class CallBase {
-public:
-	virtual ~CallBase() {}
-	virtual void Proceed(bool ok) = 0;
-};
-
-template <typename W, typename R>
-class ClientAsyncReaderWriter : public CallBase {
-	using Parent = ClientAsyncReaderWriter;
-
+template <typename W, typename R> class ClientAsyncReaderWriter {
 protected:
 	ClientAsyncReaderWriter(grpc::ClientAsyncReaderWriter<W, R> *stream = nullptr,
 													grpc::Status *status = nullptr) noexcept
@@ -38,28 +31,24 @@ protected:
 		this->stream = stream;
 		this->status = status;
 	}
-	void Proceed(bool ok) noexcept override {
-		if (ok) {
-			OnCreate();
-		} else {
-			Finish();
-		}
-	}
-
 	void ReadInitialMetadata() noexcept {
 		stream->ReadInitialMetadata(&initial_metadata_reader);
 	}
 	void Read(R *r) noexcept { stream->Read(r, &reader); }
 	void Write(W const &w) noexcept { stream->Write(w, &writer); }
 	void Write(W const &w, grpc::WriteOptions const &opt) noexcept {
-		stream->Write(w, , opt, &writer);
+		stream->Write(w, opt, &writer);
 	}
 	void WritesDone() noexcept { stream->WritesDone(&writes_doner); }
 	void Finish() noexcept { stream->Finish(status, &finisher); }
 
+	void *StartTag() noexcept { return &creator; }
+
 private:
 	virtual void OnCreate() noexcept {}
+	virtual void OnCreateError() noexcept {}
 	virtual void OnReadInitialMetadata() noexcept {}
+	virtual void OnReadInitialMetadataError() noexcept {}
 	virtual void OnRead() noexcept {}
 	virtual void OnReadDone() noexcept {}
 	virtual void OnWrite() noexcept {}
@@ -67,57 +56,34 @@ private:
 	virtual void OnFinish() noexcept {}
 
 private:
-	struct InitialMetadataReader : public CallBase {
-		Parent *parent;
-		InitialMetadataReader(Parent *parent) : parent(parent) {}
-		void Proceed(bool ok) override {
-			if (ok) {
-				parent->OnReadInitialMetadata();
-			}
-		}
-	};
-	struct Reader : public CallBase {
-		Parent *parent;
-		Reader(Parent *parent) : parent(parent) {}
-		void Proceed(bool ok) override {
-			if (ok) {
-				parent->OnRead();
-			} else {
-				parent->OnReadDone();
-			}
-		}
-	};
-	struct Writer : public CallBase {
-		Parent *parent;
-		Writer(Parent *parent) : parent(parent) {}
-		void Proceed(bool ok) override {
-			if (ok) {
-				parent->OnWrite();
-			} else {
-				parent->WritesDone();
-			}
-		}
-	};
-	struct WritesDoner : public CallBase {
-		Parent *parent;
-		WritesDoner(Parent *parent) : parent(parent) {}
-		void Proceed(bool ok) override { parent->OnWriteDone(); }
-	};
-	struct Finisher : public CallBase {
-		Parent *parent;
-		Finisher(Parent *parent) : parent(parent) {}
-		void Proceed(bool ok) override { parent->OnFinish(); }
-	};
-
-private:
 	grpc::ClientAsyncReaderWriter<W, R> *stream;
 	grpc::Status *status;
-
-	InitialMetadataReader initial_metadata_reader = {this};
-	Reader reader = {this};
-	Writer writer = {this};
-	WritesDoner writes_doner = {this};
-	Finisher finisher = {this};
+	Handler creator = [this](bool ok) noexcept {
+		if (ok)
+			OnCreate();
+		else
+			OnCreateError();
+	};
+	Handler initial_metadata_reader = [this](bool ok) noexcept {
+		if (ok)
+			OnReadInitialMetadata();
+		else
+			OnReadInitialMetadataError();
+	};
+	Handler reader = [this](bool ok) noexcept {
+		if (ok)
+			OnRead();
+		else
+			OnReadDone();
+	};
+	Handler writer = [this](bool ok) noexcept {
+		if (ok)
+			OnWrite();
+		else
+			WritesDone();
+	};
+	Handler writes_doner = [this](bool ok) noexcept { OnWriteDone(); };
+	Handler finisher = [this](bool ok) noexcept { OnFinish(); };
 };
 class CallData : public ClientAsyncReaderWriter<HelloRequest, HelloReply> {
 
@@ -132,12 +98,11 @@ class CallData : public ClientAsyncReaderWriter<HelloRequest, HelloReply> {
 	std::mutex write_mutex;
 
 public:
-	CallData(std::shared_ptr<Channel> channel, grpc::CompletionQueue *cq)
-			: Base(nullptr) {
+	CallData(std::shared_ptr<Channel> channel, grpc::CompletionQueue *cq) {
 		auto stub = Greeter::NewStub(channel);
 		stream = stub->PrepareAsyncSayHelloBidir(&context, cq);
 		Base::Init(stream.get(), &status);
-		stream->StartCall(this);
+		stream->StartCall(StartTag());
 	}
 	void OnCreate() noexcept override {
 		std::cout << std::this_thread::get_id() << " create" << std::endl;
@@ -205,7 +170,7 @@ int main() {
 		bool ok = false;
 		while (cq.Next(&tag, &ok)) {
 			std::cout << "ok: " << ok << std::endl;
-			static_cast<CallBase *>(tag)->Proceed(ok);
+			static_cast<HandlerBase *>(tag)->Proceed(ok);
 		}
 	};
 	std::thread t1(f);
