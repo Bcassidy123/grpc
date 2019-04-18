@@ -50,7 +50,7 @@ protected:
 		stream->Finish(status, &finisher);
 	}
 	void *RequestTag() noexcept { return &creator; }
-	void *CancelTag() noexcept { return &canceller; }
+	void *DoneTag() noexcept { return &doner; }
 
 private:
 	virtual void OnCreate() noexcept {}
@@ -62,7 +62,7 @@ private:
 	virtual void OnWrite() noexcept {}
 	virtual void OnWriteDone() noexcept {}
 	virtual void OnFinish() noexcept {}
-	virtual void OnCancelled() noexcept {}
+	virtual void OnDone() noexcept {}
 
 private:
 	grpc::ServerAsyncReaderWriter<W, R> *stream;
@@ -99,7 +99,7 @@ private:
 		OnFinish();
 	}};
 	Handler finisher{[this](bool) { OnFinish(); }};
-	Handler canceller{[this](bool) { OnCancelled(); }};
+	Handler doner{[this](bool) { OnDone(); }};
 };
 
 class CallData final
@@ -110,7 +110,7 @@ public:
 	CallData(helloworld::Greeter::AsyncService *service,
 					 grpc::ServerCompletionQueue *cq)
 			: Base(&stream, &context), service(service), cq(cq), stream(&context) {
-		context.AsyncNotifyWhenDone(Base::CancelTag());
+		context.AsyncNotifyWhenDone(Base::DoneTag());
 		service->RequestSayHelloBidir(&context, &stream, cq, cq,
 																	Base::RequestTag());
 	}
@@ -168,9 +168,10 @@ private:
 							<< status.error_details() << std::endl;
 		delete this;
 	}
-	void OnCancelled() noexcept override {
-		std::cout << std::this_thread::get_id() << " cancelled" << std::endl;
-		Finish(Status::CANCELLED);
+	void OnDone() noexcept override {
+		std::cout << std::this_thread::get_id() << " done" << std::endl;
+		if (context.IsCancelled())
+			Finish(Status::CANCELLED);
 	}
 
 private:
