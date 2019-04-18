@@ -29,6 +29,7 @@ protected:
 	ServerAsyncReaderWriter(
 			grpc::ServerAsyncReaderWriter<W, R> *stream = nullptr) noexcept
 			: stream(stream) {}
+	virtual ~ServerAsyncReaderWriter() {}
 	void Init(grpc::ServerAsyncReaderWriter<W, R> *stream) noexcept {
 		this->stream = stream;
 	}
