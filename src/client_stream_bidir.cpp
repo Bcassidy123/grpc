@@ -23,13 +23,11 @@ using helloworld::HelloRequest;
 
 template <typename W, typename R> class ClientAsyncReaderWriter {
 protected:
-	ClientAsyncReaderWriter(grpc::ClientAsyncReaderWriter<W, R> *stream = nullptr,
-													grpc::Status *status = nullptr) noexcept
-			: stream(stream), status(status) {}
-	void Init(grpc::ClientAsyncReaderWriter<W, R> *stream,
-						grpc::Status *status) noexcept {
+	ClientAsyncReaderWriter(
+			grpc::ClientAsyncReaderWriter<W, R> *stream = nullptr) noexcept
+			: stream(stream) {}
+	void Init(grpc::ClientAsyncReaderWriter<W, R> *stream) noexcept {
 		this->stream = stream;
-		this->status = status;
 	}
 	void ReadInitialMetadata() noexcept {
 		stream->ReadInitialMetadata(&initial_metadata_reader);
@@ -40,7 +38,7 @@ protected:
 		stream->Write(w, opt, &writer);
 	}
 	void WritesDone() noexcept { stream->WritesDone(&writes_doner); }
-	void Finish() noexcept { stream->Finish(status, &finisher); }
+	void Finish(Status *status) noexcept { stream->Finish(status, &finisher); }
 
 	void *StartTag() noexcept { return &creator; }
 
@@ -57,7 +55,6 @@ private:
 
 private:
 	grpc::ClientAsyncReaderWriter<W, R> *stream;
-	grpc::Status *status;
 	Handler creator = [this](bool ok) noexcept {
 		if (ok)
 			OnCreate();
@@ -101,7 +98,7 @@ public:
 	CallData(std::shared_ptr<Channel> channel, grpc::CompletionQueue *cq) {
 		auto stub = Greeter::NewStub(channel);
 		stream = stub->PrepareAsyncSayHelloBidir(&context, cq);
-		Base::Init(stream.get(), &status);
+		Base::Init(stream.get());
 		stream->StartCall(StartTag());
 	}
 	void Write(std::string something) {
@@ -117,7 +114,7 @@ public:
 		std::lock_guard l{write_mutex};
 		pending_writes.clear();
 		context.TryCancel(); // cancel everything
-		Base::Finish();
+		Base::Finish(&status);
 	}
 
 private: // overrides
