@@ -11,4 +11,5 @@ struct Handler {
 														Handler, std::remove_reference_t<F>>>>
 	Handler(F &&f) : func(std::forward<F>(f)) {}
 	void Proceed(bool ok) const { func(ok); }
+	explicit operator bool() const noexcept { return (bool)func; }
 };
