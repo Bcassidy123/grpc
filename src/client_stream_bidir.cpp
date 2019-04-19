@@ -1,4 +1,5 @@
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <iostream>
 #include <list>
@@ -23,20 +24,21 @@ using helloworld::HelloReply;
 using helloworld::HelloRequest;
 
 class CallData {
+	std::shared_ptr<Channel> channel;
+	std::unique_ptr<Greeter::Stub> stub;
+	grpc::ClientContext context;
 	std::unique_ptr<grpc::ClientAsyncReaderWriter<HelloRequest, HelloReply>>
 			stream;
-	grpc::ClientContext context;
 	grpc::Status status;
 	HelloReply reply;
 	std::list<HelloRequest> pending_requests;
 	std::mutex pending_requests_mutex;
-	std::atomic_bool finished = false;
 
 public:
-	CallData(std::shared_ptr<Channel> channel, grpc::CompletionQueue *cq) {
-		auto stub = Greeter::NewStub(channel);
-		stream = stub->PrepareAsyncSayHelloBidir(&context, cq);
-		stream->StartCall(&OnCreate);
+	CallData(std::shared_ptr<Channel> channel, grpc::CompletionQueue *cq)
+			: channel(channel) {
+		stub = Greeter::NewStub(channel);
+		stream = stub->AsyncSayHelloBidir(&context, cq, &OnCreate);
 	}
 
 public:
@@ -89,9 +91,6 @@ private: //
 			std::cout << std::this_thread::get_id()
 								<< " write: " << pending_requests.front().name() << std::endl;
 			pending_requests.pop_front();
-			if (finished) {
-				stream->WritesDone(&OnWritesDone);
-			}
 			if (!pending_requests.empty()) {
 				stream->Write(pending_requests.front(), &OnWrite);
 			}
@@ -151,7 +150,7 @@ int main() {
 	t2.join();
 	t3.join();
 	t4.join();
-	f();
+
 	std::cout << " Good" << std::endl;
 
 	return 0;
