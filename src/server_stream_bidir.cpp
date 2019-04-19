@@ -30,6 +30,7 @@ public:
 	CallData(helloworld::Greeter::AsyncService *service,
 					 grpc::ServerCompletionQueue *cq)
 			: service(service), cq(cq), stream(&context) {
+		num_in_flight = 2;
 		context.AsyncNotifyWhenDone(&OnDone);
 		service->RequestSayHelloBidir(&context, &stream, cq, cq, &OnCreate);
 	}
@@ -39,6 +40,7 @@ private:
 		std::lock_guard l{write_mutex};
 		writes.emplace_back(std::move(reply));
 		if (writes.size() == 1) {
+			++num_in_flight;
 			stream.Write(writes.front(), &OnWrite);
 		}
 	}
@@ -48,19 +50,23 @@ private:
 		new CallData(service, cq);
 		if (ok) {
 			std::cout << std::this_thread::get_id() << " created" << std::endl;
+			++num_in_flight;
 			stream.SendInitialMetadata(&OnSendInitialMetadata);
 		} else {
 			std::cout << std::this_thread::get_id() << " created error" << std::endl;
 		}
+		SelfDestruct();
 	};
 	Handler OnSendInitialMetadata = [this](bool ok) noexcept {
 		if (ok) {
 			std::cout << std::this_thread::get_id() << " sent metadata " << std::endl;
+			++num_in_flight;
 			stream.Read(&request, &OnRead);
 		} else {
 			std::cout << std::this_thread::get_id() << " send metadata error"
 								<< std::endl;
 		}
+		SelfDestruct();
 	};
 	Handler OnRead = [this](bool ok) noexcept {
 		if (ok) {
@@ -68,11 +74,13 @@ private:
 								<< std::endl;
 			HelloReply reply;
 			reply.set_message("You sent: " + request.name());
+			++num_in_flight;
 			stream.Read(&request, &OnRead);
 			Write(std::move(reply));
 		} else {
 			std::cout << std::this_thread::get_id() << " read done" << std::endl;
 		}
+		SelfDestruct();
 	};
 	Handler OnWrite = [this](bool ok) noexcept {
 		if (ok) {
@@ -81,11 +89,13 @@ private:
 								<< " wrote: " << writes.front().message() << std::endl;
 			writes.pop_front();
 			if (!writes.empty()) {
+				++num_in_flight;
 				stream.Write(writes.front(), &OnWrite);
 			}
 		} else {
 			std::cout << std::this_thread::get_id() << " write done" << std::endl;
 		}
+		SelfDestruct();
 	};
 	Handler OnFinish = [this](bool ok) noexcept {
 		if (ok) {
@@ -96,12 +106,20 @@ private:
 			std::cout << std::this_thread::get_id() << " finished error "
 								<< std::endl;
 		}
+		done = true;
+		SelfDestruct();
 	};
 	Handler OnDone = [this](bool ok) noexcept {
 		std::cout << std::this_thread::get_id() << " done "
 							<< (context.IsCancelled() ? "cancelled" : "") << std::endl;
-		delete this;
+		done = true;
+		SelfDestruct();
 	};
+	void SelfDestruct() {
+		if ((--num_in_flight == 0) && done) {
+			delete this;
+		}
+	}
 
 private:
 	helloworld::Greeter::AsyncService *service;
@@ -112,6 +130,8 @@ private:
 	HelloRequest request;
 	std::list<HelloReply> writes;
 	std::mutex write_mutex;
+	std::atomic_bool done = false;
+	std::atomic_uint num_in_flight = 0;
 };
 
 class ServerImpl {
