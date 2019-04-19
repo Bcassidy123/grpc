@@ -9,8 +9,6 @@
 #include <string>
 #include <type_traits>
 
-#include <windows.h>
-
 #include <grpcpp/grpcpp.h>
 
 #include "helloworld.grpc.pb.h"
