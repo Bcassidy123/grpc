@@ -25,14 +25,14 @@ using helloworld::Greeter;
 using helloworld::HelloReply;
 using helloworld::HelloRequest;
 
-class CallData {
+class CallData : public std::enable_shared_from_this<CallData> {
 public:
 	CallData(helloworld::Greeter::AsyncService *service,
 					 grpc::ServerCompletionQueue *cq)
-			: service(service), cq(cq), stream(&context) {
-		num_in_flight = 2;
-		context.AsyncNotifyWhenDone(&OnDone);
-		service->RequestSayHelloBidir(&context, &stream, cq, cq, &OnCreate);
+			: service(service), cq(cq), stream(&context) {}
+	void Start() {
+		context.AsyncNotifyWhenDone(OnDone());
+		service->RequestSayHelloBidir(&context, &stream, cq, cq, OnCreate());
 	}
 
 private:
@@ -40,85 +40,81 @@ private:
 		std::lock_guard l{write_mutex};
 		writes.emplace_back(std::move(reply));
 		if (writes.size() == 1) {
-			++num_in_flight;
-			stream.Write(writes.front(), &OnWrite);
+			stream.Write(writes.front(), OnWrite());
 		}
 	}
 
 private:
-	Handler OnCreate = [this](bool ok) noexcept {
-		new CallData(service, cq);
-		if (ok) {
-			std::cout << std::this_thread::get_id() << " created" << std::endl;
-			++num_in_flight;
-			stream.SendInitialMetadata(&OnSendInitialMetadata);
-		} else {
-			std::cout << std::this_thread::get_id() << " created error" << std::endl;
-		}
-		SelfDestruct();
-	};
-	Handler OnSendInitialMetadata = [this](bool ok) noexcept {
-		if (ok) {
-			std::cout << std::this_thread::get_id() << " sent metadata " << std::endl;
-			++num_in_flight;
-			stream.Read(&request, &OnRead);
-		} else {
-			std::cout << std::this_thread::get_id() << " send metadata error"
-								<< std::endl;
-		}
-		SelfDestruct();
-	};
-	Handler OnRead = [this](bool ok) noexcept {
-		if (ok) {
-			std::cout << std::this_thread::get_id() << " read: " << request.name()
-								<< std::endl;
-			HelloReply reply;
-			reply.set_message("You sent: " + request.name());
-			++num_in_flight;
-			stream.Read(&request, &OnRead);
-			Write(std::move(reply));
-		} else {
-			std::cout << std::this_thread::get_id() << " read done" << std::endl;
-		}
-		SelfDestruct();
-	};
-	Handler OnWrite = [this](bool ok) noexcept {
-		if (ok) {
-			std::lock_guard l{write_mutex};
-			std::cout << std::this_thread::get_id()
-								<< " wrote: " << writes.front().message() << std::endl;
-			writes.pop_front();
-			if (!writes.empty()) {
-				++num_in_flight;
-				stream.Write(writes.front(), &OnWrite);
+	Handler *OnCreate() {
+		return new Handler([this, me = shared_from_this()](bool ok) noexcept {
+			std::make_shared<CallData>(service, cq)->Start();
+			if (ok) {
+				std::cout << std::this_thread::get_id() << " created" << std::endl;
+				stream.SendInitialMetadata(OnSendInitialMetadata());
+			} else {
+				std::cout << std::this_thread::get_id() << " created error"
+									<< std::endl;
 			}
-		} else {
-			std::cout << std::this_thread::get_id() << " write done" << std::endl;
-		}
-		SelfDestruct();
-	};
-	Handler OnFinish = [this](bool ok) noexcept {
-		if (ok) {
-			std::cout << std::this_thread::get_id()
-								<< " finished: " << status.error_code() << " "
-								<< status.error_details() << std::endl;
-		} else {
-			std::cout << std::this_thread::get_id() << " finished error "
-								<< std::endl;
-		}
-		done = true;
-		SelfDestruct();
-	};
-	Handler OnDone = [this](bool ok) noexcept {
-		std::cout << std::this_thread::get_id() << " done "
-							<< (context.IsCancelled() ? "cancelled" : "") << std::endl;
-		done = true;
-		SelfDestruct();
-	};
-	void SelfDestruct() {
-		if ((--num_in_flight == 0) && done) {
-			delete this;
-		}
+		});
+	}
+	Handler *OnSendInitialMetadata() {
+		return new Handler([this, me = shared_from_this()](bool ok) noexcept {
+			if (ok) {
+				std::cout << std::this_thread::get_id() << " sent metadata "
+									<< std::endl;
+				stream.Read(&request, OnRead());
+			} else {
+				std::cout << std::this_thread::get_id() << " send metadata error"
+									<< std::endl;
+			}
+		});
+	}
+	Handler *OnRead() {
+		return new Handler([this, me = shared_from_this()](bool ok) noexcept {
+			if (ok) {
+				std::cout << std::this_thread::get_id() << " read: " << request.name()
+									<< std::endl;
+				HelloReply reply;
+				reply.set_message("You sent: " + request.name());
+				stream.Read(&request, OnRead());
+				Write(std::move(reply));
+			} else {
+				std::cout << std::this_thread::get_id() << " read done" << std::endl;
+			}
+		});
+	}
+	Handler *OnWrite() {
+		return new Handler([this, me = shared_from_this()](bool ok) noexcept {
+			if (ok) {
+				std::lock_guard l{write_mutex};
+				std::cout << std::this_thread::get_id()
+									<< " wrote: " << writes.front().message() << std::endl;
+				writes.pop_front();
+				if (!writes.empty()) {
+					stream.Write(writes.front(), OnWrite());
+				}
+			} else {
+				std::cout << std::this_thread::get_id() << " write done" << std::endl;
+			}
+		});
+	}
+	Handler *OnFinish() {
+		return new Handler([this, me = shared_from_this()](bool ok) noexcept {
+			if (ok) {
+				std::cout << std::this_thread::get_id()
+									<< " finished: " << status.error_code() << " "
+									<< status.error_details() << std::endl;
+			} else {
+				std::cout << std::this_thread::get_id() << " finished error "
+									<< std::endl;
+			}
+		});
+	}
+	Handler *OnDone() {
+		return new Handler([this, me = shared_from_this()](bool ok) noexcept {
+			std::cout << std::this_thread::get_id() << " done "
+								<< (context.IsCancelled() ? "cancelled" : "") << std::endl;
+		});
 	}
 
 private:
@@ -130,8 +126,6 @@ private:
 	HelloRequest request;
 	std::list<HelloReply> writes;
 	std::mutex write_mutex;
-	std::atomic_bool done = false;
-	std::atomic_uint num_in_flight = 0;
 };
 
 class ServerImpl {
@@ -155,7 +149,7 @@ public:
 private:
 	void HandleRpcs() {
 		std::atomic_bool shutdown = false;
-		new CallData(&service, cq.get());
+		std::make_shared<CallData>(&service, cq.get())->Start();
 		auto f = [&]() {
 			void *tag;
 			bool ok;
