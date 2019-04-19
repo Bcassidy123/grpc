@@ -133,10 +133,7 @@ class ServerImpl {
 	std::string server_address;
 	helloworld::Greeter::AsyncService service;
 	std::unique_ptr<Server> server;
-	std::unique_ptr<grpc::ServerCompletionQueue> cq;
-	std::unique_ptr<grpc::ServerCompletionQueue> cq2;
-	std::unique_ptr<grpc::ServerCompletionQueue> cq3;
-	std::unique_ptr<grpc::ServerCompletionQueue> cq4;
+	std::vector<std::unique_ptr<grpc::ServerCompletionQueue>> cqs;
 
 public:
 	ServerImpl(std::string server_address) : server_address(server_address) {}
@@ -144,75 +141,37 @@ public:
 		ServerBuilder builder;
 		builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
 		builder.RegisterService(&service);
-		cq = builder.AddCompletionQueue();
-		cq2 = builder.AddCompletionQueue();
-		cq3 = builder.AddCompletionQueue();
-		cq4 = builder.AddCompletionQueue();
+		for (auto i = 0; i < 4; ++i) {
+			cqs.emplace_back(builder.AddCompletionQueue());
+		}
 		server = builder.BuildAndStart();
 		std::cout << "Server listening on " << server_address << std::endl;
-		HandleRpcs();
-	}
 
-private:
-	void HandleRpcs() {
-		std::make_shared<CallData>(&service, cq.get())->Start();
-		std::make_shared<CallData>(&service, cq2.get())->Start();
-		std::make_shared<CallData>(&service, cq3.get())->Start();
-		std::make_shared<CallData>(&service, cq4.get())->Start();
-		auto f = [&]() {
-			void *tag;
-			bool ok;
-			while (cq->Next(&tag, &ok)) {
-				std::cout << "ok: " << ok << std::endl;
-				static_cast<Handler *>(tag)->Proceed(ok);
-			}
+		auto f = [](grpc::CompletionQueue *cq) {
+			return [=] {
+				void *tag;
+				bool ok;
+				while (cq->Next(&tag, &ok)) {
+					static_cast<Handler *>(tag)->Proceed(ok);
+				}
+			};
 		};
 
-		std::thread t1([&]() {
-			void *tag;
-			bool ok;
-			while (cq->Next(&tag, &ok)) {
-				std::cout << "ok: " << ok << std::endl;
-				static_cast<Handler *>(tag)->Proceed(ok);
-			}
-		});
-		std::thread t2([&]() {
-			void *tag;
-			bool ok;
-			while (cq2->Next(&tag, &ok)) {
-				std::cout << "ok: " << ok << std::endl;
-				static_cast<Handler *>(tag)->Proceed(ok);
-			}
-		});
-		std::thread t3([&]() {
-			void *tag;
-			bool ok;
-			while (cq3->Next(&tag, &ok)) {
-				std::cout << "ok: " << ok << std::endl;
-				static_cast<Handler *>(tag)->Proceed(ok);
-			}
-		});
-		std::thread t4([&]() {
-			void *tag;
-			bool ok;
-			while (cq4->Next(&tag, &ok)) {
-				std::cout << "ok: " << ok << std::endl;
-				static_cast<Handler *>(tag)->Proceed(ok);
-			}
-		});
+		std::vector<std::thread> ts;
+		for (auto &cq : cqs) {
+			std::make_shared<CallData>(&service, cq.get())->Start();
+			ts.emplace_back(f(cq.get()));
+		}
 
 		std::string j;
 		std::cin >> j;
 		server->Shutdown();
-		cq4->Shutdown();
-		cq3->Shutdown();
-		cq2->Shutdown();
-		cq->Shutdown();
-
-		t1.join();
-		t2.join();
-		t3.join();
-		t4.join();
+		for (auto &cq : cqs) {
+			cq->Shutdown();
+		}
+		for (auto &t : ts) {
+			t.join();
+		}
 
 		std::cout << " GOOD" << std::endl;
 		std::cin >> j;
