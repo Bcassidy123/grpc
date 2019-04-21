@@ -36,7 +36,7 @@ public:
 	/// etc...)
 	/// @param notification_cq Completes when a call is initiated
 	SayHelloBidir(helloworld::Greeter::AsyncService *service,
-								grpc::ServerCompletionQueue *call_cq,
+								grpc::CompletionQueue *call_cq,
 								grpc::ServerCompletionQueue *notification_cq)
 			: service(service), call_cq(call_cq), notification_cq(notification_cq),
 				stream(&context) {}
@@ -154,7 +154,7 @@ private: // Handlers
 
 private:
 	helloworld::Greeter::AsyncService *service;
-	grpc::ServerCompletionQueue *call_cq;
+	grpc::CompletionQueue *call_cq;
 	grpc::ServerCompletionQueue *notification_cq;
 	grpc::ServerAsyncReaderWriter<HelloReply, HelloRequest> stream;
 	grpc::ServerContext context;
@@ -185,7 +185,7 @@ public:
 		// Only using one completion queue for both notification and calls.
 		// Unless it's really necessary you probably want this.
 		auto f = [](helloworld::Greeter::AsyncService *service,
-								grpc::CompletionQueue *cq) {
+								grpc::ServerCompletionQueue *cq) {
 			return [service, cq] {
 				std::make_shared<SayHelloBidir>(service, cq, cq)->Start();
 				void *tag;
