@@ -27,10 +27,15 @@ class SayHelloBidirClient
 		: public std::enable_shared_from_this<SayHelloBidirClient> {
 
 public:
+	///  Construct a new Say Hello Bidir Client object
+	///
+	/// @param channel Used in the creation of the stub when starting
+	/// @param cq call completion queue
 	SayHelloBidirClient(std::shared_ptr<Channel> channel,
 											grpc::CompletionQueue *cq)
 			: channel(channel), cq(cq) {}
 
+	/// Two stage initialization because shared_from_this is used.
 	void Start() {
 		stub = Greeter::NewStub(channel);
 		stream = stub->AsyncSayHelloBidir(&context, cq, OnCreate());
