@@ -24,7 +24,8 @@ using helloworld::HelloReply;
 using helloworld::HelloRequest;
 
 /// rpc call
-class SayHelloBidir : public std::enable_shared_from_this<SayHelloBidir> {
+class SayHelloBidirServer
+		: public std::enable_shared_from_this<SayHelloBidirServer> {
 public:
 	/// Construct a new Say Hello Bidir object
 	///
@@ -35,9 +36,9 @@ public:
 	/// @param call_cq Completes everything after call (read, write, finish, done,
 	/// etc...)
 	/// @param notification_cq Completes when a call is initiated
-	SayHelloBidir(helloworld::Greeter::AsyncService *service,
-								grpc::CompletionQueue *call_cq,
-								grpc::ServerCompletionQueue *notification_cq)
+	SayHelloBidirServer(helloworld::Greeter::AsyncService *service,
+											grpc::CompletionQueue *call_cq,
+											grpc::ServerCompletionQueue *notification_cq)
 			: service(service), call_cq(call_cq), notification_cq(notification_cq),
 				stream(&context) {}
 	/// Two stage initialization because shared_from_this is used.
@@ -79,7 +80,7 @@ private: // Handlers
 			if (ok) {
 				std::cout << std::this_thread::get_id() << " created" << std::endl;
 				// Create another waiter for this rpc
-				std::make_shared<SayHelloBidir>(service, call_cq, notification_cq)
+				std::make_shared<SayHelloBidirServer>(service, call_cq, notification_cq)
 						->Start();
 				stream.SendInitialMetadata(OnSendInitialMetadata());
 			} else {
@@ -187,7 +188,7 @@ public:
 		auto f = [](helloworld::Greeter::AsyncService *service,
 								grpc::ServerCompletionQueue *cq) {
 			return [service, cq] {
-				std::make_shared<SayHelloBidir>(service, cq, cq)->Start();
+				std::make_shared<SayHelloBidirServer>(service, cq, cq)->Start();
 				void *tag;
 				bool ok;
 				while (cq->Next(&tag, &ok)) {
