@@ -23,32 +23,64 @@ using helloworld::Greeter;
 using helloworld::HelloReply;
 using helloworld::HelloRequest;
 
-class CallData : public std::enable_shared_from_this<CallData> {
+/// rpc call
+class SayHelloBidir : public std::enable_shared_from_this<SayHelloBidir> {
 public:
-	CallData(helloworld::Greeter::AsyncService *service,
-					 grpc::ServerCompletionQueue *cq)
-			: service(service), cq(cq), stream(&context) {}
-	~CallData() { std::cout << "I'm destroyed" << std::endl; }
+	/// Construct a new Say Hello Bidir object
+	///
+	/// Parameters are stored and will be used to initiate wait for a new rpc when
+	/// this one is used.
+	///
+	/// @param service Used to wait for the call
+	/// @param call_cq Completes everything after call (read, write, finish, done,
+	/// etc...)
+	/// @param notification_cq Completes when a call is initiated
+	SayHelloBidir(helloworld::Greeter::AsyncService *service,
+								grpc::ServerCompletionQueue *call_cq,
+								grpc::ServerCompletionQueue *notification_cq)
+			: service(service), call_cq(call_cq), notification_cq(notification_cq),
+				stream(&context) {}
+	/// Two stage initialization because shared_from_this is used.
 	void Start() {
+		// Both OnDone() and OnCreate() make new Handlers which store a reference to
+		// this shared ptr. So once Start() is called references can be dropped.
+
+		// When the rpc ends Done is called. This is always called.
 		context.AsyncNotifyWhenDone(OnDone());
-		service->RequestSayHelloBidir(&context, &stream, cq, cq, OnCreate());
+		// Initiate a wait for rpc
+		service->RequestSayHelloBidir(&context, &stream, call_cq, notification_cq,
+																	OnCreate());
 	}
 
 private:
 	void Write(HelloReply reply) {
+		// If we're using more than one thread on the completion queue then we'd
+		// have a data race on the writes.
 		std::lock_guard l{write_mutex};
+		// Only add the the pending writes as an ongoing write will get to it
+		// eventually.
 		writes.emplace_back(std::move(reply));
+		// If there weren't any pending writes then we'll have to start the write.
 		if (writes.size() == 1) {
 			stream.Write(writes.front(), OnWrite());
 		}
 	}
 
-private:
+private: // Handlers
+	// Handlers are deleted after use. This destroys the shared_ptr reference and
+	// so new Handlers need to be created to keep the object alive if it's
+	// required. The order that concurrent handlers complete is non deterministic.
+	// Even if Done is called, other handlers might still be inflight and there is
+	// no guarantee on their success or failure so the object that keeps the state
+	// must still be kept alive.
+
 	Handler *OnCreate() {
 		return new Handler([this, me = shared_from_this()](bool ok) noexcept {
 			if (ok) {
 				std::cout << std::this_thread::get_id() << " created" << std::endl;
-				std::make_shared<CallData>(service, cq)->Start();
+				// Create another waiter for this rpc
+				std::make_shared<SayHelloBidir>(service, call_cq, notification_cq)
+						->Start();
 				stream.SendInitialMetadata(OnSendInitialMetadata());
 			} else {
 				std::cout << std::this_thread::get_id() << " created error"
@@ -61,6 +93,7 @@ private:
 			if (ok) {
 				std::cout << std::this_thread::get_id() << " sent metadata "
 									<< std::endl;
+				// Begin read
 				stream.Read(&request, OnRead());
 			} else {
 				std::cout << std::this_thread::get_id() << " send metadata error"
@@ -75,6 +108,7 @@ private:
 									<< std::endl;
 				HelloReply reply;
 				reply.set_message("You sent: " + request.name());
+				// Continue to read until failure
 				stream.Read(&request, OnRead());
 				Write(std::move(reply));
 			} else {
@@ -89,6 +123,8 @@ private:
 				std::cout << std::this_thread::get_id()
 									<< " wrote: " << writes.front().message() << std::endl;
 				writes.pop_front();
+				// There can only be one write at a time and so writes get queued.
+				// Thus continue to write until the queue is empty.
 				if (!writes.empty()) {
 					stream.Write(writes.front(), OnWrite());
 				}
@@ -118,7 +154,8 @@ private:
 
 private:
 	helloworld::Greeter::AsyncService *service;
-	grpc::ServerCompletionQueue *cq;
+	grpc::ServerCompletionQueue *call_cq;
+	grpc::ServerCompletionQueue *notification_cq;
 	grpc::ServerAsyncReaderWriter<HelloReply, HelloRequest> stream;
 	grpc::ServerContext context;
 	grpc::Status status;
@@ -145,8 +182,12 @@ public:
 		server = builder.BuildAndStart();
 		std::cout << "Server listening on " << server_address << std::endl;
 
-		auto f = [](grpc::CompletionQueue *cq) {
-			return [=] {
+		// Only using one completion queue for both notification and calls.
+		// Unless it's really necessary you probably want this.
+		auto f = [](helloworld::Greeter::AsyncService *service,
+								grpc::CompletionQueue *cq) {
+			return [service, cq] {
+				std::make_shared<SayHelloBidir>(service, cq, cq)->Start();
 				void *tag;
 				bool ok;
 				while (cq->Next(&tag, &ok)) {
@@ -155,24 +196,27 @@ public:
 			};
 		};
 
+		// The recommendation is for one thread per completion queue
 		std::vector<std::thread> ts;
 		for (auto &cq : cqs) {
-			std::make_shared<CallData>(&service, cq.get())->Start();
-			ts.emplace_back(f(cq.get()));
+			ts.emplace_back(f(&service, cq.get()));
 		}
 
 		std::string j;
 		std::cin >> j;
+		// Server shutdown must be done before completion queue.
 		server->Shutdown();
+		// Initiate completion queue shutdowns.
 		for (auto &cq : cqs) {
 			cq->Shutdown();
 		}
+		// Completion queues have to be drained after shutdown so we'll wait for the
+		// threads to complete.
 		for (auto &t : ts) {
 			t.join();
 		}
 
-		std::cout << " GOOD" << std::endl;
-		std::cin >> j;
+		std::cout << "Finished" << std::endl;
 	}
 };
 
