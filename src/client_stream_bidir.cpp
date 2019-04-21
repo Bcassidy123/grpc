@@ -23,21 +23,12 @@ using helloworld::Greeter;
 using helloworld::HelloReply;
 using helloworld::HelloRequest;
 
-class CallData : public std::enable_shared_from_this<CallData> {
-	std::shared_ptr<Channel> channel;
-	grpc::CompletionQueue *cq;
-	std::unique_ptr<Greeter::Stub> stub;
-	grpc::ClientContext context;
-	std::unique_ptr<grpc::ClientAsyncReaderWriter<HelloRequest, HelloReply>>
-			stream;
-	grpc::Status status;
-	HelloReply reply;
-	std::list<HelloRequest> pending_requests;
-	std::mutex pending_requests_mutex;
-	bool quit = false;
+class SayHelloBidirClient
+		: public std::enable_shared_from_this<SayHelloBidirClient> {
 
 public:
-	CallData(std::shared_ptr<Channel> channel, grpc::CompletionQueue *cq)
+	SayHelloBidirClient(std::shared_ptr<Channel> channel,
+											grpc::CompletionQueue *cq)
 			: channel(channel), cq(cq) {}
 
 	void Start() {
@@ -131,6 +122,19 @@ private: //
 								<< std::endl;
 		});
 	}
+
+private:
+	std::shared_ptr<Channel> channel;
+	grpc::CompletionQueue *cq;
+	std::unique_ptr<Greeter::Stub> stub;
+	grpc::ClientContext context;
+	std::unique_ptr<grpc::ClientAsyncReaderWriter<HelloRequest, HelloReply>>
+			stream;
+	grpc::Status status;
+	HelloReply reply;
+	std::list<HelloRequest> pending_requests;
+	std::mutex pending_requests_mutex;
+	bool quit = false;
 };
 
 int main() {
@@ -139,7 +143,7 @@ int main() {
 	auto channel =
 			grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
 	CompletionQueue cq;
-	auto p = std::make_shared<CallData>(channel, &cq);
+	auto p = std::make_shared<SayHelloBidirClient>(channel, &cq);
 	auto c = p.get();
 	c->Start();
 	p.reset();
