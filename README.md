@@ -2,6 +2,7 @@
 grpc helloworld example with cmake
 
 ## Develop
+Need to add protoc and grpc_cpp_plugin to path.
 ```Shell
 vcpkg install grpc
 git clone https://github.com/bcassidy123/grpc && cd grpc
