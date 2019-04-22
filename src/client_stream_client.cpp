@@ -122,7 +122,6 @@ public:
 		std::cout << "Sync call" << std::endl;
 		channel =
 				grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
-		stub_ = Greeter::NewStub(channel);
 		std::thread t([this] {
 			auto p = std::make_unique<SayHellosClientStreamClientSync>(channel);
 			p->Run({"what", "in", "the", "world"});
