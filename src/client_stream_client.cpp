@@ -127,7 +127,6 @@ public:
 			auto p = std::make_unique<SayHellosClientStreamClientSync>(channel);
 			p->Run({"what", "in", "the", "world"});
 		});
-		// HandleRpcs(&cq);
 		std::string j;
 		std::cin >> j;
 		t.join();
@@ -138,7 +137,6 @@ public:
 				grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
 		stub_ = Greeter::NewStub(channel);
 		std::thread t([this] { HandleRpcs(&cq); });
-		// HandleRpcs(&cq);
 		std::string j;
 		std::cin >> j;
 		cq.Shutdown();
