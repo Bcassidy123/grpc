@@ -112,6 +112,9 @@ public:
 			cq->Shutdown();
 		}
 		server->Wait();
+		for (auto &&t : threads) {
+			t.join();
+		}
 		std::cout << "Server shutdown on " << server_address << std::endl;
 	}
 

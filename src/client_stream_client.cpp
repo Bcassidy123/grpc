@@ -89,10 +89,51 @@ private:
 	std::list<std::string> msgs;
 };
 
+class SayHellosClientStreamClientSync {
+public:
+	SayHellosClientStreamClientSync(std::shared_ptr<Channel> channel) {
+		stub = Greeter::NewStub(channel);
+	}
+	void Run(std::list<std::string> msgs) {
+		auto stream = stub->SayHellosClient(&context, &response);
+		for (auto &&m : msgs) {
+			HelloRequest r;
+			r.set_name(m);
+			if (!stream->Write(r))
+				break;
+		}
+		stream->WritesDone();
+		auto status = stream->Finish();
+		std::cout << "SayHellosClientStreamSyn finished with status: "
+							<< status.error_code() << std::endl;
+		std::cout << "read: " << response.message() << std::endl;
+	}
+
+private:
+	grpc::ClientContext context;
+	std::unique_ptr<Greeter::Stub> stub;
+	HelloReply response;
+};
+
 class ClientImpl {
 public:
 	ClientImpl(std::string server_address) : server_address(server_address) {}
+	void RunSync() {
+		std::cout << "Sync call" << std::endl;
+		channel =
+				grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
+		stub_ = Greeter::NewStub(channel);
+		std::thread t([this] {
+			auto p = std::make_unique<SayHellosClientStreamClientSync>(channel);
+			p->Run({"what", "in", "the", "world"});
+		});
+		// HandleRpcs(&cq);
+		std::string j;
+		std::cin >> j;
+		t.join();
+	}
 	void Run() {
+		std::cout << "Async call" << std::endl;
 		channel =
 				grpc::CreateChannel(server_address, grpc::InsecureChannelCredentials());
 		stub_ = Greeter::NewStub(channel);
@@ -125,5 +166,6 @@ int main() {
 	std::string server_address("localhost:50051");
 	ClientImpl client(server_address);
 	client.Run();
+	client.RunSync();
 	return 0;
 }
